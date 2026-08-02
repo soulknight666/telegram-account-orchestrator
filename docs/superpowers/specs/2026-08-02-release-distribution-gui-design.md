@@ -189,7 +189,22 @@ ssh -L 8849:127.0.0.1:8849 user@SERVER
 - Release：验证产物命名、图标资源、版本号和 SHA-256 文件。
 - 回归：保留并运行现有全部 pytest 测试。
 
-## 10. 验收标准
+## 10. Telegram 稳定分享预览
+
+GitHub 仓库页面的 Social Preview 由 GitHub 生成，当前 `og:image` 使用短时效签名地址。README 首图只影响仓库正文展示，不覆盖仓库页面的 Open Graph 元数据。
+
+项目增加一个 GitHub Pages 分享入口：
+
+- 页面地址：`https://soulknight666.github.io/telegram-account-orchestrator/`。
+- 页面设置稳定的 `og:title`、`og:description`、`og:image` 和 Twitter Card 元数据。
+- `og:image` 指向仓库 Raw 固定资源 `docs/assets/preview.png`，不包含临时签名参数。
+- 页面提供仓库简介、主要能力、GitHub 仓库按钮和 Release 下载按钮。
+- README 顶部继续展示同一品牌图片，但 Telegram 分享统一推荐 Pages 地址。
+- GitHub Actions 部署 Pages，并验证生成页面中的 OG 图片地址为 HTTPS 固定地址。
+
+`github.io` 是 GitHub Pages 的默认托管域名，仓库 Pages 使用 `{账号}.github.io/{仓库名}/` 路径。后续如配置自定义域名，只需替换 Pages 基础地址和 canonical URL。
+
+## 11. 验收标准
 
 - Windows 用户无需运行 `.bat` 即可安装或启动 TAO。
 - Windows GUI 能保存配置、运行检查、启动/停止服务、打开控制台并显示日志。
@@ -199,4 +214,5 @@ ssh -L 8849:127.0.0.1:8849 user@SERVER
 - Docker Compose 和 systemd 方式均能启动并通过健康检查。
 - 配置和数据在升级后保持不变。
 - 标签工作流自动生成约定的全部 Release 产物、Docker 镜像和校验文件。
+- Telegram 分享 GitHub Pages 地址时使用固定 Raw 预览图，不依赖 GitHub 仓库页的短时效 Social Preview 地址。
 - 所有新增测试和现有测试通过，公开发布扫描通过。

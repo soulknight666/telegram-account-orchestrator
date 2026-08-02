@@ -15,12 +15,12 @@ from tam.codefetch import extract_code, strip_html  # noqa: E402
 from tam.db import Database  # noqa: E402
 from tam.importer import import_accounts, parse_line, parse_text  # noqa: E402
 
-REAL = "+18129773632|https://tgapi.puonl.com/@cof333/8dc96736-3efb-4353-a78b-274f20c5779f/GetHTML"
+REAL = "+10000000000|https://example.invalid/code/primary/GetHTML"
 
 
 def test_parse() -> None:
     a = parse_line(REAL)
-    assert a.phone == "+18129773632"
+    assert a.phone == "+10000000000"
     assert a.code_url.endswith("/GetHTML")
     # 转义管道符、全角管道符、制表符、逗号、逆序、空格、手机号无加号
     for variant in (
@@ -29,11 +29,11 @@ def test_parse() -> None:
         REAL.replace("|", "\t"),
         REAL.replace("|", " , "),
         "  " + REAL + "  ",
-        "18129773632|" + REAL.split("|", 1)[1],
-        REAL.split("|", 1)[1] + "|" + "+18129773632",
+        "10000000000|" + REAL.split("|", 1)[1],
+        REAL.split("|", 1)[1] + "|" + "+10000000000",
     ):
         p = parse_line(variant)
-        assert p.phone == "+18129773632" and p.code_url.endswith("/GetHTML"), variant
+        assert p.phone == "+10000000000" and p.code_url.endswith("/GetHTML"), variant
     # 第三段当备注/别名
     assert parse_line(REAL + "|美国号A").label == "美国号A"
     # 注释与空行
@@ -47,7 +47,7 @@ def test_batch() -> None:
     text = "\n".join([
         "# 批次 2026-07",
         REAL,
-        "+18129773633|https://tgapi.puonl.com/@cof333/aaaa/GetHTML",
+        "+10000000001|https://example.invalid/code/secondary/GetHTML",
         "",
         "乱数据行",
     ])
@@ -61,14 +61,14 @@ def test_batch() -> None:
     res = import_accounts(db, text, tags=["batch1"])
     assert len(res["added"]) == 2
     acc = db.list()[0]
-    assert acc.phone == "+18129773632" and acc.code_url.endswith("/GetHTML")
-    assert acc.tags == ["batch1"] and acc.label == "+18129773632"
+    assert acc.phone == "+10000000000" and acc.code_url.endswith("/GetHTML")
+    assert acc.tags == ["batch1"] and acc.label == "+10000000000"
 
     # 幂等：重复导入不新增
     res2 = import_accounts(db, text)
     assert res2["added"] == [] and len(db.list()) == 2
     # 取码链接变更则补写
-    res3 = import_accounts(db, "+18129773632|https://tgapi.puonl.com/@cof333/new/GetHTML")
+    res3 = import_accounts(db, "+10000000000|https://example.invalid/code/new/GetHTML")
     assert len(res3["updated"]) == 1
     assert db.get(acc.id).code_url.endswith("/new/GetHTML")
     print("批量导入 + 幂等 + 旧库迁移 OK")
@@ -98,7 +98,7 @@ async def test_tools() -> None:
 
     assert {"import_accounts", "preview_import", "auto_login"} <= {t["name"] for t in list_tools()}
     r = await call_tool(ctx, "preview_import", {"text": REAL})
-    assert r["ok"] and r["result"]["parsed"][0]["phone"] == "+18129773632"
+    assert r["ok"] and r["result"]["parsed"][0]["phone"] == "+10000000000"
     r = await call_tool(ctx, "import_accounts", {"text": REAL, "tags": ["t"]})
     assert r["ok"] and len(r["result"]["added"]) == 1
     aid = db.list()[0].id

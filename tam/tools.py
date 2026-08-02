@@ -247,7 +247,7 @@ async def _update_account(ctx: ToolContext, account_id: int, fields: dict[str, A
 
 
 @tool("import_accounts", "批量导入 `手机号|取码链接` 格式的初始账号清单（幂等）", "write",
-      {"properties": {"text": _prop(type="string", description="每行一个，如 +18129773632|https://tgapi.example.com/@u/<uuid>/GetHTML"),
+      {"properties": {"text": _prop(type="string", description="每行一个，如 +10000000000|https://tgapi.example.com/@u/<uuid>/GetHTML"),
                       "tags": _prop(type="array", items={"type": "string"}),
                       "proxy": _prop(type="string", description="统一代理（可选）")},
        "required": ["text"]})

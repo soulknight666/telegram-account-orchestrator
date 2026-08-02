@@ -1,3 +1,20 @@
+# Telegram Account Orchestrator (TAO)
+
+<p align="center">
+  <img src="docs/assets/tao-icon.png" alt="Telegram Account Orchestrator (TAO) icon" width="220">
+</p>
+
+**Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and Telegram Desktop tdata import.**
+
+TAO is a Telegram account manager and orchestration toolkit for encrypted session storage, account health checks, controlled batch operations, device-session management, account-package processing, and automation through REST or MCP.
+
+- **Interfaces:** Web UI, REST API, CLI, Telegram Bot, MCP
+- **Core:** Telethon, FastAPI, encrypted SQLite-backed account storage
+- **Import:** StringSession, `.session`, Telegram Desktop `tdata`
+- **License:** MIT; GAFBot-derived code is documented in [`NOTICE.GAFBot`](NOTICE.GAFBot) and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md)
+
+## 中文说明
+
 # Telegram 账号管理器（自托管）
 
 基于 Telethon(MTProto) 的多账号管理工具：加密保存会话、按账号绑定代理与设备指纹、健康检查、受控批量操作、审计日志。CLI + Web 控制台 + **AI/Agent 控制层**三入口。
@@ -106,8 +123,8 @@ python -m tam.cli doctor --json # 机器可读输出（给脚本 / Agent）
 支持 `手机号|取码链接` 行格式，例：
 
 ```
-+18129773632|https://tgapi.puonl.com/@cof333/8dc96736-3efb-4353-a78b-274f20c5779f/GetHTML
-+18129773633|https://tgapi.puonl.com/@cof333/xxxxxxxx/GetHTML|美国号B
++10000000000|https://example.invalid/code/primary/GetHTML
++10000000001|https://example.invalid/code/secondary/GetHTML|美国号B
 ```
 
 ```bash

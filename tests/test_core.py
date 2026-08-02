@@ -43,6 +43,7 @@ def test_db():
         db.delete(a.id)
         assert db.get(a.id) is None
         print("db                OK")
+        db.conn.close()
 
 
 def test_proxy_parse():

@@ -30,6 +30,7 @@ def test_release_workflow_builds_all_public_artifacts() -> None:
 
     assert "windows-latest" in content
     assert "ubuntu-latest" in content
+    assert '".[bot,dev,release]"' in content
     assert "packaging/tao-launcher.spec" in content
     assert "packaging/tao.iss" in content
     assert "python -m tam.cli fix-opentele" in content

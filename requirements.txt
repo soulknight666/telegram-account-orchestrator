@@ -1,0 +1,15 @@
+telethon>=1.36,<2
+cryptography>=42
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+python-socks[asyncio]>=2.4
+
+# ---- 机器人前端（TAM_FRONTEND=bot 或 both 时才需要；只用网页可以不装）----
+python-telegram-bot[job-queue]>=21.0
+opentele>=1.15
+requests>=2.31
+aiohttp>=3.9
+cbor2>=5.6
+qrcode>=7.4
+pillow>=10.0

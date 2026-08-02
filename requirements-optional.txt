@@ -1,0 +1,3 @@
+# 可选依赖：仅在使用 tdata 导入（Telegram Desktop 号包）时需要。
+# 安装失败不影响其他功能，可随时重跑向导或手动：pip install opentele
+opentele>=1.15

@@ -29,6 +29,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Install metadata test dependency
+        run: python -m pip install pytest
       - name: Verify social metadata
         run: python -m pytest -q tests/test_social_preview.py
       - uses: actions/configure-pages@v5

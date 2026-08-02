@@ -12,6 +12,10 @@ def workflow(name: str) -> str:
 def test_pages_workflow_deploys_static_site_with_oidc_permissions() -> None:
     content = workflow("pages.yml")
 
+    assert "python -m pip install pytest" in content
+    assert content.index("python -m pip install pytest") < content.index(
+        "python -m pytest -q tests/test_social_preview.py"
+    )
     assert "actions/configure-pages@v5" in content
     assert "actions/upload-pages-artifact@v3" in content
     assert "actions/deploy-pages@v4" in content
@@ -26,6 +30,7 @@ def test_release_workflow_builds_all_public_artifacts() -> None:
 
     assert "windows-latest" in content
     assert "ubuntu-latest" in content
+    assert '".[bot,dev,release]"' in content
     assert "packaging/tao-launcher.spec" in content
     assert "packaging/tao.iss" in content
     assert "python -m tam.cli fix-opentele" in content

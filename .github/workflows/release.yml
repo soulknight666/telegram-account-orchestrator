@@ -35,7 +35,9 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install build dependencies
-        run: python -m pip install --upgrade pip ".[bot,release]"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[bot,dev,release]"
       - name: Apply Python 3.13 opentele compatibility patch
         run: python -m tam.cli fix-opentele
       - name: Verify Windows release sources

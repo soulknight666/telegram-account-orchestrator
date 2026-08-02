@@ -14,7 +14,7 @@ def test_dockerfile_runs_as_non_root_with_healthcheck() -> None:
     assert "FROM python:3.13-slim AS builder" in text
     assert "build-essential" in text
     assert "COPY --from=builder /opt/venv /opt/venv" in text
-    assert "/opt/venv/bin/python -m tam.cli fix-opentele" in text
+    assert "tam.cli fix-opentele" not in text
     assert "USER tao" in text
     assert "HEALTHCHECK" in text
     assert "python -m tam.run" in text

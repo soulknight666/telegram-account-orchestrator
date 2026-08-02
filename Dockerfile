@@ -8,8 +8,7 @@ WORKDIR /src
 COPY . /src
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/python -m pip install --no-cache-dir ".[bot]" \
-    && /opt/venv/bin/python -m tam.cli fix-opentele
+    && /opt/venv/bin/python -m pip install --no-cache-dir ".[bot]"
 
 FROM python:3.13-slim
 

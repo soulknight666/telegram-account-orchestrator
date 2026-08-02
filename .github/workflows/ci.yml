@@ -20,6 +20,7 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev,bot]"
-      - run: python -m compileall -q tam tests
+      - run: python -m compileall -q tam tests tools
+      - run: python -m pytest -q tests/test_social_preview.py tests/test_workflows.py tests/test_packaging_assets.py
       - run: python -m pytest -q tests
       - run: python tools/audit_public_release.py --tracked-only

@@ -28,6 +28,8 @@ def test_release_workflow_builds_all_public_artifacts() -> None:
     assert "ubuntu-latest" in content
     assert "packaging/tao-launcher.spec" in content
     assert "packaging/tao.iss" in content
+    assert "python -m tam.cli fix-opentele" in content
+    assert content.index("python -m tam.cli fix-opentele") < content.index("pyinstaller --clean")
     assert "TAO-Windows-x64-Portable.zip" in content
     assert "TAO-Windows-x64-Setup.exe" in content
     assert "TAO-Linux-x64.tar.gz" in content

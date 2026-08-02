@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +13,7 @@ def _read(path: str) -> str:
 
 def test_pyinstaller_spec_uses_windowed_onedir_and_assets() -> None:
     text = _read("packaging/tao-launcher.spec")
+    assert "ROOT = Path(SPECPATH).parent\n" in text
     assert "console=False" in text
     assert "TAO-Launcher" in text
     assert "tam/web" in text
@@ -40,3 +43,20 @@ def test_artifact_verifier_knows_release_contract() -> None:
     assert "TAO-Windows-x64-Setup.exe" in text
     assert "TAO-Linux-x64.tar.gz" in text
     assert "SHA256SUMS.txt" in text
+
+
+def test_package_and_installer_versions_match() -> None:
+    project = tomllib.loads(_read("pyproject.toml"))
+    installer = _read("packaging/tao.iss")
+    match = re.search(r'#define AppVersion "([^"]+)"', installer)
+
+    assert match is not None
+    assert project["project"]["version"] == match.group(1)
+
+
+def test_local_release_build_outputs_are_ignored() -> None:
+    ignored = set(_read(".gitignore").splitlines())
+
+    assert "build/" in ignored
+    assert "dist/" in ignored
+    assert "release/" in ignored

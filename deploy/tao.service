@@ -1,0 +1,31 @@
+[Unit]
+Description=Telegram Account Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tao
+Group=tao
+WorkingDirectory=/opt/tao
+EnvironmentFile=/etc/tao/tao.env
+Environment=TAM_ENV_FILE=/etc/tao/tao.env
+Environment=TAM_DATA_DIR=/var/lib/tao
+ExecStart=/opt/tao/.venv/bin/python -m tam.run --deploy server --frontend web --host 0.0.0.0 --port 8848 --no-menu
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/tao /etc/tao
+
+[Install]
+WantedBy=multi-user.target

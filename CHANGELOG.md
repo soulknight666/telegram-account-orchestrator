@@ -2,6 +2,14 @@
 
 All notable changes follow semantic versioning.
 
+## [0.2.1] - 2026-08-02
+
+### Fixed
+
+- Install pytest before GitHub Pages and Windows Release metadata tests.
+- Build the Linux container in two stages so `tgcrypto` compiles without adding build tools to the runtime image.
+- Apply the Python 3.13 opentele compatibility patch inside the container build.
+
 ## [0.2.0] - 2026-08-02
 
 ### Added

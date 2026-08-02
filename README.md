@@ -9,7 +9,7 @@ TAO is a Telegram account manager and orchestration toolkit for encrypted sessio
 - **Import:** StringSession, `.session`, Telegram Desktop `tdata`
 - **License:** MIT; GAFBot-derived code is documented in [`NOTICE.GAFBot`](NOTICE.GAFBot) and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md)
 
-## ????
+## 中文说明
 
 # Telegram 账号管理器（自托管）
 

@@ -1,4 +1,4 @@
-# FOR_AI.md — 给 AI / 开发者的技术文档（魔改指南）
+# FOR_AI.md — Telegram Account Orchestrator (TAO) 开发者与 Agent 指南
 
 > **增删工具必须双注册：** 网页看 `toolbox.py`，AI/Agent 看 `tools.py`。只改一侧会导致「网页有、AI 没有」或相反。详见 §8 / §9。
 
@@ -470,4 +470,3 @@ ZIP 扩展：`POST /api/tools/convert`、`POST /api/tools/passkey`。二验工�
 - **登录 / 导入 / 导出会话**：仍在 `HUMAN_ONLY`，不对 Agent 开放凭证。
 
 群组搜索/加入/成员/消息读写、屏蔽用户等此前已在 AI 层提供。
-

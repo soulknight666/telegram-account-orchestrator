@@ -1,5 +1,9 @@
 # Telegram Account Orchestrator (TAO)
 
+<p align="center">
+  <img src="docs/assets/tao-icon.png" alt="Telegram Account Orchestrator (TAO) icon" width="220">
+</p>
+
 **Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and Telegram Desktop tdata import.**
 
 TAO is a Telegram account manager and orchestration toolkit for encrypted session storage, account health checks, controlled batch operations, device-session management, account-package processing, and automation through REST or MCP.

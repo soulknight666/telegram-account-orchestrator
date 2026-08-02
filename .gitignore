@@ -1,0 +1,6 @@
+data/
+.env
+__pycache__/
+*.session
+
+.worktrees/

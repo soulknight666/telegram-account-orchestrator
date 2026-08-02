@@ -106,8 +106,8 @@ python -m tam.cli doctor --json # 机器可读输出（给脚本 / Agent）
 支持 `手机号|取码链接` 行格式，例：
 
 ```
-+18129773632|https://tgapi.puonl.com/@cof333/8dc96736-3efb-4353-a78b-274f20c5779f/GetHTML
-+18129773633|https://tgapi.puonl.com/@cof333/xxxxxxxx/GetHTML|美国号B
++10000000000|https://example.invalid/code/primary/GetHTML
++10000000001|https://example.invalid/code/secondary/GetHTML|美国号B
 ```
 
 ```bash

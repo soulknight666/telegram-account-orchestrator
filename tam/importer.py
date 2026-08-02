@@ -1,7 +1,7 @@
 r"""批量导入卡商/发卡平台给的初始账号行。
 
 支持格式（每行一个账号）：
-    +18129773632|https://tgapi.puonl.com/@cof333/8dc96736-.../GetHTML
+    +10000000000|https://example.invalid/code/sample/GetHTML
 
 容错：
 - 分隔符可为 | 、\| 、｜、制表符、逗号、分号

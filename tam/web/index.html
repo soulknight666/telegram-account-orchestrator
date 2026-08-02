@@ -938,7 +938,7 @@ tbody tr.sel{background:var(--blue-soft)}
   <h3>批量导入 · 手机号|取码链接</h3>
   <div class="body">
     <label class="f"><span>每行一个账号，分隔符支持 | \| ｜ Tab 逗号 分号；第三段作备注</span>
-      <textarea id="iText" oninput="previewImport()" placeholder="+18129773632|https://tgapi.puonl.com/@cof333/8dc96736-3efb-4353-a78b-274f20c5779f/GetHTML"></textarea></label>
+      <textarea id="iText" oninput="previewImport()" placeholder="+10000000000|https://example.invalid/code/primary/GetHTML"></textarea></label>
     <div class="row">
       <label class="f" style="flex:1 1 180px"><span>标签</span><input id="iTags" placeholder="batch1" /></label>
       <label class="f" style="flex:1 1 220px"><span>统一代理（可选）</span><input id="iProxy" placeholder="socks5://host:1080" /></label>
@@ -1166,9 +1166,9 @@ const MOCK = {
 
   accounts: [
     {id:1,label:'主号',phone:'+8613800138000',username:'gladys',status:'active',proxy:'socks5://127.0.0.1:1080',code_url:null,tags:['main'],authorized:true,premium:1,auto_kick:1,has_2fa:1,has_twofa_saved:true,twofa:'Demo2fa!',login_at:Math.floor(Date.now()/1000)-72000,adopted_at:Math.floor(Date.now()/1000)-72000},
-    {id:2,label:'US-A',phone:'+18129773632',username:'coldstart_a',status:'active',proxy:'socks5://us1:1080',code_url:'https://tgapi.puonl.com/@cof333/8dc96736/GetHTML',tags:['batch1','us'],authorized:true,auto_kick:1,has_2fa:1,has_twofa_saved:false,login_at:Math.floor(Date.now()/1000)-90000,last_kick_at:null},
-    {id:3,label:'US-B',phone:'+18129773633',username:null,status:'new',proxy:'socks5://us2:1080',code_url:'https://tgapi.puonl.com/@cof333/7bb1a204/GetHTML',tags:['batch1','us'],authorized:false,has_2fa:0},
-    {id:4,label:'US-C',phone:'+18129773634',username:null,status:'unauthorized',proxy:null,code_url:'https://tgapi.puonl.com/@cof333/1f0c9b55/GetHTML',tags:['batch1'],authorized:false,has_2fa:null},
+    {id:2,label:'US-A',phone:'+10000000000',username:'coldstart_a',status:'active',proxy:'socks5://us1:1080',code_url:'https://example.invalid/code/account-a/GetHTML',tags:['batch1','us'],authorized:true,auto_kick:1,has_2fa:1,has_twofa_saved:false,login_at:Math.floor(Date.now()/1000)-90000,last_kick_at:null},
+    {id:3,label:'US-B',phone:'+10000000001',username:null,status:'new',proxy:'socks5://us2:1080',code_url:'https://example.invalid/code/account-b/GetHTML',tags:['batch1','us'],authorized:false,has_2fa:0},
+    {id:4,label:'US-C',phone:'+10000000002',username:null,status:'unauthorized',proxy:null,code_url:'https://example.invalid/code/account-c/GetHTML',tags:['batch1'],authorized:false,has_2fa:null},
     {id:5,label:'tdata-01',phone:'+447700900123',username:'desk_one',status:'restricted',proxy:'socks5://uk1:1080',code_url:null,tags:['tdata'],authorized:true,has_2fa:1,has_twofa_saved:true,twofa:'uk-pass'},
     {id:6,label:'tdata-02',phone:'+447700900124',username:null,status:'banned',proxy:'socks5://uk1:1080',code_url:null,tags:['tdata'],authorized:false,has_2fa:0}
   ],

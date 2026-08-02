@@ -30,6 +30,7 @@ bot = [
   "pillow>=10.0",
 ]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+release = ["pyinstaller>=6.10", "pillow>=10.0"]
 
 [project.scripts]
 tao = "tam.cli:main"

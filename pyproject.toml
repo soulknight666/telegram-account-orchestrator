@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telegram-account-orchestrator"
+version = "0.1.0"
+description = "Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and Telegram Desktop tdata import."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [{name = "soulknight666"}]
+dependencies = [
+  "telethon>=1.36,<2",
+  "cryptography>=42",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "pydantic>=2.6",
+  "python-socks[asyncio]>=2.4",
+]
+
+[project.optional-dependencies]
+bot = [
+  "python-telegram-bot[job-queue]>=21.0",
+  "opentele>=1.15",
+  "requests>=2.31",
+  "aiohttp>=3.9",
+  "cbor2>=5.6",
+  "qrcode>=7.4",
+  "pillow>=10.0",
+]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+tao = "tam.cli:main"
+tao-run = "tam.run:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tam"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

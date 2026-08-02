@@ -1,3 +1,16 @@
+# Telegram Account Orchestrator (TAO)
+
+**Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and Telegram Desktop tdata import.**
+
+TAO is a Telegram account manager and orchestration toolkit for encrypted session storage, account health checks, controlled batch operations, device-session management, account-package processing, and automation through REST or MCP.
+
+- **Interfaces:** Web UI, REST API, CLI, Telegram Bot, MCP
+- **Core:** Telethon, FastAPI, encrypted SQLite-backed account storage
+- **Import:** StringSession, `.session`, Telegram Desktop `tdata`
+- **License:** MIT; GAFBot-derived code is documented in [`NOTICE.GAFBot`](NOTICE.GAFBot) and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md)
+
+## ????
+
 # Telegram 账号管理器（自托管）
 
 基于 Telethon(MTProto) 的多账号管理工具：加密保存会话、按账号绑定代理与设备指纹、健康检查、受控批量操作、审计日志。CLI + Web 控制台 + **AI/Agent 控制层**三入口。

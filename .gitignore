@@ -27,6 +27,7 @@ unpack/
 .env.*
 !.env.example
 .codegraph/
+.superpowers/
 .idea/
 .vscode/
 

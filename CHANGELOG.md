@@ -2,6 +2,12 @@
 
 All notable changes follow semantic versioning.
 
+## [0.2.2] - 2026-08-02
+
+### Fixed
+
+- Stop treating optional `opentele` as a required Docker build dependency; the built-in tdata parser remains the default path.
+
 ## [0.2.1] - 2026-08-02
 
 ### Fixed

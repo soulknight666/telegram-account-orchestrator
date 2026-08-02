@@ -20,7 +20,7 @@
 - [x] `python -m pytest -q tests`
 - [x] `python -m pip check`
 - [x] `git diff --check`
-- [x] Package and installer metadata report version `0.2.1`.
+- [x] Package and installer metadata report version `0.2.2`.
 
 ## Distribution artifacts
 
@@ -46,4 +46,4 @@
 - Description: `Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and Telegram Desktop tdata import.`
 - Topics: `telegram`, `telegram-account-manager`, `telegram-multi-account`, `telethon`, `self-hosted`, `fastapi`, `telegram-bot`, `mcp`, `account-orchestration`
 - Security reporting: GitHub Security Advisories
-- Current release tag: `v0.2.1`
+- Current release tag: `v0.2.2`

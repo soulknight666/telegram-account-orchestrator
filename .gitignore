@@ -10,6 +10,9 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+build/
+dist/
+release/
 .venv/
 venv/
 *.session-journal
@@ -27,6 +30,7 @@ unpack/
 .env.*
 !.env.example
 .codegraph/
+.superpowers/
 .idea/
 .vscode/
 

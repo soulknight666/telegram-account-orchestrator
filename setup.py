@@ -36,6 +36,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+from tam.release_config import update_env_values
+
 ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
 EXAMPLE_PATH = ROOT / ".env.example"
@@ -127,28 +129,9 @@ def read_env() -> dict[str, str]:
 
 def set_env(updates: dict[str, str]) -> None:
     """就地更新 .env，保留注释与未提及的行。"""
-    if ENV_PATH.exists():
-        lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
-    elif EXAMPLE_PATH.exists():
-        lines = EXAMPLE_PATH.read_text(encoding="utf-8").splitlines()
-    else:
-        lines = []
-    remaining = dict(updates)
-    out: list[str] = []
-    for line in lines:
-        m = re.match(r"^(\s*)([A-Z0-9_]+)(\s*)=(.*)$", line)
-        if m and m.group(2) in remaining:
-            key = m.group(2)
-            comment = ""
-            tail = m.group(4)
-            if "#" in tail:
-                comment = "  " + tail[tail.index("#"):].strip()
-            out.append(f"{key}={remaining.pop(key)}{comment}")
-        else:
-            out.append(line)
-    for k, v in remaining.items():
-        out.append(f"{k}={v}")
-    ENV_PATH.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    if not ENV_PATH.exists() and EXAMPLE_PATH.exists():
+        shutil.copy(EXAMPLE_PATH, ENV_PATH)
+    update_env_values(updates, ENV_PATH)
 
 
 PLACEHOLDERS = {"", "0", "change-me", "changeme", "1234567",

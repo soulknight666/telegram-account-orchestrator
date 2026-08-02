@@ -1,0 +1,17 @@
+.git
+.github
+.worktrees
+.superpowers
+.venv
+__pycache__
+.pytest_cache
+data
+logs
+jobs
+unpack
+tdata
+*.session
+*.sqlite*
+*.db
+.env*
+!/.env.example

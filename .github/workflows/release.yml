@@ -1,0 +1,162 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/soulknight666/telegram-account-orchestrator
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan repository secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    needs: scan
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip ".[bot,release]"
+      - name: Apply Python 3.13 opentele compatibility patch
+        run: python -m tam.cli fix-opentele
+      - name: Verify Windows release sources
+        run: python -m pytest -q tests/test_launcher.py tests/test_packaging_assets.py
+      - name: Generate branding
+        run: python tools/build_branding.py
+      - name: Build portable application
+        run: pyinstaller --clean --noconfirm packaging/tao-launcher.spec
+      - name: Smoke test portable application
+        run: .\dist\TAO-Windows-x64-Portable\TAO-Launcher.exe --smoke-test
+      - name: Sign portable executable when certificate is configured
+        if: env.SIGNING_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.SIGNING_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "tao-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          & $signtool sign /fd SHA256 /f $pfx /p $env:SIGNING_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td SHA256 ".\dist\TAO-Windows-x64-Portable\TAO-Launcher.exe"
+      - name: Create portable archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path ".\dist\TAO-Windows-x64-Portable\*" -DestinationPath ".\release\TAO-Windows-x64-Portable.zip" -Force
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          if ($version -notmatch '^\d+\.\d+\.\d+') { $version = "0.2.0" }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "packaging/tao.iss"
+      - name: Sign installer when certificate is configured
+        if: env.SIGNING_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.SIGNING_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "tao-signing.pfx"
+          if (-not (Test-Path $pfx)) {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64))
+          }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          & $signtool sign /fd SHA256 /f $pfx /p $env:SIGNING_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td SHA256 ".\release\TAO-Windows-x64-Setup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            release/TAO-Windows-x64-Portable.zip
+            release/TAO-Windows-x64-Setup.exe
+          if-no-files-found: error
+
+  linux:
+    needs: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install and test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,bot]"
+          python -m pytest -q tests/test_headless_setup.py tests/test_deployment_assets.py
+          python tools/audit_public_release.py --tracked-only
+      - name: Build Linux source distribution
+        run: |
+          mkdir -p release
+          git archive --format=tar.gz --prefix=telegram-account-orchestrator/ --output=release/TAO-Linux-x64.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: release/TAO-Linux-x64.tar.gz
+          if-no-files-found: error
+
+  docker:
+    needs: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish GHCR image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+  publish:
+    needs: [windows, linux, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          path: release
+          merge-multiple: true
+      - name: Generate and verify SHA-256 checksums
+        run: python tools/verify_release_artifacts.py release --write-checksums
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/TAO-Windows-x64-Portable.zip
+            release/TAO-Windows-x64-Setup.exe
+            release/TAO-Linux-x64.tar.gz
+            release/SHA256SUMS.txt

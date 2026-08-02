@@ -341,6 +341,13 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Linux/服务器无桌面配置入口。"""
+    from .headless_setup import run_headless_setup
+
+    run_headless_setup(args)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="tam", description="Telegram 账号管理器")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -457,6 +464,12 @@ def main(argv: list[str] | None = None) -> None:
     fx.add_argument("--status", action="store_true", help="只查看状态，不修改")
     fx.add_argument("--revert", action="store_true", help="还原补丁")
     fx.set_defaults(func=cmd_fix_opentele)
+
+    st = sub.add_parser("setup", help="无桌面配置向导（Linux/systemd/Docker）")
+    from .headless_setup import add_setup_arguments
+
+    add_setup_arguments(st)
+    st.set_defaults(func=cmd_setup)
 
     mc = sub.add_parser("mcp", help="以 MCP stdio 服务端运行（供 Claude/Cursor 等接入）")
     mc.set_defaults(func=cmd_mcp)

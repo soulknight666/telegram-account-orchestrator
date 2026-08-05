@@ -5,7 +5,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from .tools import HUMAN_ONLY, ToolContext, call_tool, list_tools
 from .tools import _REGISTRY as TOOLS
@@ -99,6 +99,7 @@ def default_config() -> dict[str, Any]:
         "system_prompt": PROMPT_PRESETS["ops"],
         "max_tool_rounds": 6,
         "require_confirm_destructive": True,
+        "confirm_write": True,
         "allow_account_ids": [],  # 空=不限制
         "temperature": 0.2,
         "auto_compress": True,
@@ -229,6 +230,7 @@ def save_config(db, cfg: dict[str, Any]) -> dict[str, Any]:
     cur["enabled"] = _as_bool(cur.get("enabled"), False)
     cur["require_confirm_destructive"] = _as_bool(
         cur.get("require_confirm_destructive"), True)
+    cur["confirm_write"] = _as_bool(cur.get("confirm_write"), True)
     cur["auto_compress"] = _as_bool(cur.get("auto_compress"), True)
     try:
         cur["context_keep_recent"] = max(2, min(int(cur.get("context_keep_recent") or 8), 80))
@@ -472,8 +474,19 @@ def _call_anthropic(
         "messages": messages,
     }
     if system:
-        payload["system"] = system
+        # Anthropic prompt cache：把稳定的 system 前缀标记为可缓存，跨轮/跨消息命中服务端缓存
+        payload["system"] = [{
+            "type": "text",
+            "text": system,
+            "cache_control": {"type": "ephemeral"},
+        }]
     if tools:
+        payload["tools"] = tools
+        # 断点放最后一个稳定项末尾：system(+tools) 前缀不变 → 命中 prompt cache
+        tools = list(tools)
+        last = dict(tools[-1])
+        last.setdefault("cache_control", {"type": "ephemeral"})
+        tools[-1] = last
         payload["tools"] = tools
     data = _http_json(url, payload, headers=headers)
     text_parts: list[str] = []
@@ -645,6 +658,19 @@ def _msgs_to_gemini(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str,
 
 
 
+def _parse_args(raw_args: Any) -> dict[str, Any]:
+    """把模型返回的参数（JSON 字符串或 dict）安全解析为 dict。"""
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _check_account_scope(cfg: dict[str, Any], args: dict[str, Any]) -> str | None:
     """若配置了 allow_account_ids，则限制工具只能操作这些账号。"""
     allow = cfg.get("allow_account_ids") or []
@@ -810,6 +836,23 @@ def compress_messages(
     return out, meta
 
 
+def _confirm_authorized_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """带工具层 confirm 门的工具，在执行前补 confirm=True。
+
+    走到此处的工具要么已获用户批准（approve），要么对应的确认开关被用户关闭，
+    两者都构成“允许执行”的授权。工具自身用 confirm 参数做安全门，不补 True 会被
+    confirm_required 挡住，导致批准/免确认都执行不了。只读工具无此参数，原样返回。
+    """
+    if name not in TOOLS:
+        return args
+    schema = TOOLS[name].get("inputSchema") or {}
+    if "confirm" not in (schema.get("properties") or {}):
+        return args
+    out = dict(args)
+    out["confirm"] = True
+    return out
+
+
 async def run_chat(
     *,
     db,
@@ -817,8 +860,17 @@ async def run_chat(
     manager,
     user_messages: list[dict[str, Any]],
     cfg: dict[str, Any] | None = None,
+    approve: list[dict[str, Any]] | None = None,
+    stream_cb: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
-    """多轮工具调用对话，支持 OpenAI 兼容 / Anthropic / Gemini / Azure。"""
+    """多轮工具调用对话，支持 OpenAI 兼容 / Anthropic / Gemini / Azure。
+
+    默认两阶段确认：工具循环在首个需要确认的 write/destructive 工具处停下，
+    返回 pending 清单；调用方在用户确认后携带 approve=... 再进来，只执行被批准的项。
+    approve=None 表示首次请求（不执行任何需确认工具）；为空 list 表示全部已处理。
+
+    stream_cb：可选，最终轮文本产生时分块逐段异步回调（用于下游流式输出）。None=不流式。
+    """
     cfg = cfg or load_config(db)
     if not cfg.get("enabled"):
         return {"ok": False, "error": "AI 面板未启用，请先在配置里打开开关"}
@@ -860,11 +912,36 @@ async def run_chat(
     trace: list[dict[str, Any]] = []
     max_rounds = int(cfg.get("max_tool_rounds") or 6)
     flags = cfg.get("tools") or {}
-    require_confirm = bool(cfg.get("require_confirm_destructive", True))
+    confirm_destructive = bool(cfg.get("require_confirm_destructive", True))
+    confirm_write = bool(cfg.get("confirm_write", True))
+
+    # 阶段 2 的批准表：{ tool_name: args }（已批准将执行的）。取消的这里不含。
+    approver: dict[str, dict[str, Any]] = {}
+    # 用户已在 approve 里明确决定过的工具名（无论批准与否）：不再重新弹确认
+    decided: set[str] = set()
+    if approve:
+        for item in approve:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("tool")
+            if not name:
+                continue
+            decided.add(name)
+            if item.get("approved") is not False:
+                args = item.get("arguments")
+                approver[name] = dict(args) if isinstance(args, dict) else {}
+
+    def _needs_confirm(name: str, danger: str) -> bool:
+        if danger == "read":
+            return False
+        if danger == "destructive":
+            return confirm_destructive
+        return confirm_write  # write
 
     import asyncio
 
     final_text = ""
+    pending: list[dict[str, Any]] = []
     for _ in range(max_rounds + 1):
         if auto_compress:
             messages, round_meta = compress_messages(
@@ -907,6 +984,12 @@ async def run_chat(
             final_text = content
         if not tool_calls:
             messages.append({"role": "assistant", "content": content or ""})
+            # 下游流式：最终文本分块推送
+            if stream_cb and content:
+                text = content
+                step = 24
+                for i in range(0, len(text), step):
+                    await stream_cb(text[i:i + step])
             break
 
         messages.append({
@@ -914,6 +997,27 @@ async def run_chat(
             "content": content or None,
             "tool_calls": tool_calls,
         })
+        # 先检查本轮工具里有哪些需要确认：有则挂起，待用户确认后再继续
+        for tc in tool_calls:
+            fn = (tc.get("function") or {})
+            name = fn.get("name") or ""
+            if name not in TOOLS:
+                continue
+            danger = TOOLS[name]["danger"]
+            args = _parse_args(fn.get("arguments") or "{}")
+            if _check_account_scope(cfg, args):
+                continue  # 越权：交给执行分支报 forbidden，不进确认清单
+            if _needs_confirm(name, danger) and name not in approver and name not in decided:
+                pending.append({
+                    "tool": name,
+                    "danger": danger,
+                    "arguments": args,
+                })
+        if pending:
+            # 挂起：本轮需确认的工具尚未执行，返回清单等确认后再继续
+            break
+
+        executed_any = False
         for tc in tool_calls:
             fn = (tc.get("function") or {})
             name = fn.get("name") or ""
@@ -925,22 +1029,32 @@ async def run_chat(
             if not isinstance(args, dict):
                 args = {}
 
+            scope_err = _check_account_scope(cfg, args) if name in TOOLS else None
             if name not in TOOLS or name in HUMAN_ONLY or not flags.get(name, False):
                 result: dict[str, Any] = {
                     "ok": False,
                     "error": {"code": "forbidden", "message": f"工具未授权：{name}"},
                 }
-            else:
-                scope_err = _check_account_scope(cfg, args)
-                if scope_err:
-                    result = {"ok": False, "error": {"code": "forbidden", "message": scope_err}}
+            elif scope_err:
+                result = {"ok": False, "error": {"code": "forbidden", "message": scope_err}}
+            elif name not in approver:
+                # 需确认但未获批准（用户拒绝/未勾选）→ 回灌"已取消"；read/无需确认直接执行
+                if not _needs_confirm(name, TOOLS[name]["danger"]):
+                    result = await call_tool(ctx, name, _confirm_authorized_args(name, args))
                 else:
-                    danger = TOOLS[name]["danger"]
-                    if require_confirm and danger == "destructive" and not args.get("confirm"):
-                        args = dict(args)
-                        args["confirm"] = True
-                    result = await call_tool(ctx, name, args)
+                    result = {
+                        "ok": False,
+                        "error": {"code": "cancelled", "message": f"工具未获确认，已取消：{name}"},
+                    }
+            else:
+                # 已获批准：以批准参数覆盖后执行
+                merged = dict(args)
+                merged.update(approver[name])
+                args = merged
+                result = await call_tool(ctx, name, _confirm_authorized_args(name, args))
 
+            if result.get("ok", False):
+                executed_any = True
             trace.append({"tool": name, "arguments": args, "result": result})
             messages.append({
                 "role": "tool",
@@ -948,6 +1062,9 @@ async def run_chat(
                 "name": name,
                 "content": json.dumps(result, ensure_ascii=False, default=str)[:20000],
             })
+        if not executed_any and approve:
+            # 本轮已批准工具无一成功，避免死循环：停
+            break
     else:
         if not final_text:
             final_text = "（达到最大工具轮次，已停止）"
@@ -957,6 +1074,8 @@ async def run_chat(
         "provider": provider,
         "message": {"role": "assistant", "content": final_text or "（无文本回复）"},
         "trace": trace,
+        "pending": pending,
+        "messages": messages,
         "tools_available": [t["function"]["name"] for t in tools_oai],
         "context": compress_meta,
     }

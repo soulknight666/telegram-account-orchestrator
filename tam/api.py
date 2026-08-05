@@ -2610,6 +2610,7 @@ async def tools_toapi(
 
 class AiChatIn(BaseModel):
     messages: list[dict[str, Any]] = []
+    approve: list[dict[str, Any]] | None = None
 
 
 @app.get("/api/ai/config", dependencies=[Depends(auth)])
@@ -2636,26 +2637,68 @@ async def ai_config_put(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/ai/chat", dependencies=[Depends(auth)])
-async def ai_chat(body: AiChatIn) -> dict[str, Any]:
+async def ai_chat(request: Request, body: AiChatIn):
     from . import ai_panel
     if settings.readonly:
         raise HTTPException(403, "只读模式禁用 AI 对话")
     cfg = ai_panel.load_config(db)
     if not cfg.get("enabled"):
         raise HTTPException(400, "请先在 AI 配置中启用面板")
-    try:
-        result = await ai_panel.run_chat(
+
+    async def _run() -> dict[str, Any]:
+        return await ai_panel.run_chat(
             db=db, settings=settings, manager=manager,
             user_messages=body.messages or [],
             cfg=cfg,
+            approve=body.approve,
         )
-    except Exception as exc:  # noqa: BLE001
-        record_error(f"AI chat: {exc}", level="error", source="server", path="/api/ai/chat")
-        raise HTTPException(500, f"{type(exc).__name__}: {exc}") from exc
+
+    if _want_ndjson(request):
+        async def producer():
+            q: asyncio.Queue = asyncio.Queue()
+
+            async def on_chunk(text: str) -> None:
+                await q.put({"event": "delta", "text": text})
+
+            async def runner():
+                try:
+                    result = await ai_panel.run_chat(
+                        db=db, settings=settings, manager=manager,
+                        user_messages=body.messages or [],
+                        cfg=cfg,
+                        approve=body.approve,
+                        stream_cb=on_chunk,
+                    )
+                    if not result.get("ok"):
+                        await q.put({"event": "error", "error": result.get("error") or "AI 调用失败"})
+                    else:
+                        db.log(None, "ai.chat", True, f"tools={len(result.get('trace') or [])}")
+                        await q.put({"event": "done", **result})
+                except Exception as exc:  # noqa: BLE001
+                    record_error(f"AI chat: {exc}", level="error", source="server", path="/api/ai/chat")
+                    await q.put({"event": "error", "error": f"{type(exc).__name__}: {exc}"})
+                finally:
+                    await q.put(None)
+
+            task = asyncio.create_task(runner())
+            try:
+                while True:
+                    ev = await q.get()
+                    if ev is None:
+                        break
+                    yield ev
+            finally:
+                if not task.done():
+                    task.cancel()
+
+        return _ndjson_stream(producer())
+
+    result = await _run()
     if not result.get("ok"):
         raise HTTPException(400, result.get("error") or "AI 调用失败")
     db.log(None, "ai.chat", True, f"tools={len(result.get('trace') or [])}")
     return result
+
 
 
 

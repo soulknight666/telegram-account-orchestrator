@@ -5454,7 +5454,10 @@ function renderAiConfigForm() {
       '<input id="aiAccounts" value="' + esc((c.allow_account_ids || []).join(',')) + '" placeholder="例如 1,2,5" /></label>' +
       '<label class="row" style="gap:8px;margin:4px 0 0;font-size:12.5px">' +
       '<input type="checkbox" id="aiReqConfirm"' + (c.require_confirm_destructive !== false ? ' checked' : '') + ' />' +
-      '<span>危险工具自动附带 confirm（仅对已勾选授权的工具）</span></label>' +
+      '<span>危险工具(注销/退出/删会话)执行前需确认</span></label>' +
+      '<label class="row" style="gap:8px;margin:4px 0 0;font-size:12.5px">' +
+      '<input type="checkbox" id="aiReqWrite"' + (c.confirm_write !== false ? ' checked' : '') + ' />' +
+      '<span>改动类工具(改二验/资料/隐私/发消息等)执行前需确认</span></label>' +
     '</div>' +
 
     '<div class="ai-actions">' +
@@ -5527,6 +5530,7 @@ function collectAiConfigBody() {
     context_max_chars: parseInt(($('#aiMaxChars') && $('#aiMaxChars').value) || prev.context_max_chars || '14000', 10),
     allow_account_ids: allow.length ? allow : (prev.allow_account_ids || []),
     require_confirm_destructive: $('#aiReqConfirm') ? !!$('#aiReqConfirm').checked : (prev.require_confirm_destructive !== false),
+    confirm_write: $('#aiReqWrite') ? !!$('#aiReqWrite').checked : (prev.confirm_write !== false),
     tools: tools,
     // 勾选状态始终以界面为准 → custom；预设一键套用走 applyAiPresetOnly
     preset: 'custom',
@@ -5589,6 +5593,7 @@ async function applyAiPresetOnly() {
       temperature: parseFloat(($('#aiTemp') && $('#aiTemp').value) || '0.2'),
       auto_compress: $('#aiAutoCompress') ? !!$('#aiAutoCompress').checked : true,
       require_confirm_destructive: $('#aiReqConfirm') ? !!$('#aiReqConfirm').checked : true,
+      confirm_write: $('#aiReqWrite') ? !!$('#aiReqWrite').checked : true,
     };
     const key = ($('#aiKey') && $('#aiKey').value || '').trim();
     if (key) body.api_key = key;
@@ -5739,6 +5744,25 @@ function aiInlineMd(s) {
   return t;
 }
 
+function aiAppendTrace(div, trace) {
+  if (!trace || !trace.length) return;
+  const t = document.createElement('div');
+  t.className = 'ai-trace';
+  trace.forEach(function (x) {
+    const ok = x.result && x.result.ok;
+    const chip = document.createElement('span');
+    chip.className = 'ai-chip ' + (ok ? 'ok' : 'err');
+    let label = (ok ? '✓ ' : '✗ ') + (x.tool || '');
+    if (!ok && x.result && x.result.error) {
+      label += ' · ' + (x.result.error.message || x.result.error.code || '');
+    }
+    chip.textContent = label;
+    chip.title = label;
+    t.appendChild(chip);
+  });
+  div.appendChild(t);
+}
+
 function aiAppendBubble(role, text, trace) {
   const box = $('#aiMsgs');
   if (!box) return;
@@ -5757,23 +5781,7 @@ function aiAppendBubble(role, text, trace) {
   } else {
     div.textContent = text || '';
   }
-  if (trace && trace.length) {
-    const t = document.createElement('div');
-    t.className = 'ai-trace';
-    trace.forEach(function (x) {
-      const ok = x.result && x.result.ok;
-      const chip = document.createElement('span');
-      chip.className = 'ai-chip ' + (ok ? 'ok' : 'err');
-      let label = (ok ? '✓ ' : '✗ ') + (x.tool || '');
-      if (!ok && x.result && x.result.error) {
-        label += ' · ' + (x.result.error.message || x.result.error.code || '');
-      }
-      chip.textContent = label;
-      chip.title = label;
-      t.appendChild(chip);
-    });
-    div.appendChild(t);
-  }
+  aiAppendTrace(div, trace);
   if (role !== 'sys') row.appendChild(meta);
   row.appendChild(div);
   box.appendChild(row);
@@ -5828,6 +5836,167 @@ function aiCompressLocalHistory(msgs) {
   ].concat(recent);
 }
 
+// 工具名 → 中文说明（取自服务端 catalog; 拿不到就用原名）
+function aiToolLabel(name) {
+  if (!AI_CFG || !AI_CFG.catalog) return name;
+  var hit = AI_CFG.catalog.filter(function (t) { return t.name === name; })[0];
+  return hit ? (hit.description || name) : name;
+}
+
+// 需确认工具清单对话框；返回非空数组=approve，返回 null=取消
+function aiConfirmTools(pending) {
+  return new Promise(function (resolve) {
+    var modal = document.createElement('div');
+    modal.className = 'modal on';
+    modal.id = 'mAiConfirm';
+    modal.style.width = 'min(680px,92vw)';
+
+    var rows = pending.map(function (p, i) {
+      var dangerous = p.danger === 'destructive';
+      var args = (typeof p.arguments === 'object' && p.arguments) ? p.arguments : {};
+      var argText = JSON.stringify(args, null, 2) || '{}';
+      var row = document.createElement('label');
+      row.style.cssText = 'display:flex;gap:8px;align-items:flex-start;cursor:pointer;' +
+        'border:1px solid ' + (dangerous ? '#f66' : '#ddd') +
+        ';border-radius:6px;padding:10px 12px;margin:6px 0;background:' + (dangerous ? '#fff1f1' : '#fbfbfb');
+      row.innerHTML =
+        '<input type="checkbox" class="ai-cf-cb" data-i="' + i + '" checked style="margin-top:3px">' +
+        '<span><strong>' + aiToolLabel(p.tool) + '</strong>' +
+        (dangerous ? ' <span style="color:#e53935;font-weight:bold">· 危险操作</span>' : '') +
+        (p.danger === 'write' ? ' <span style="color:#888;font-weight:normal">· 改动类</span>' : '') +
+        '<br><code style="white-space:pre-wrap;word-break:break-all;font-size:11px;color:#444;display:inline-block;margin-top:4px">' +
+          aiEscapeHtml(argText) + '</code></span>';
+      return row;
+    });
+
+    modal.innerHTML =
+      '<h3>AI 请求执行以下操作，请勾选后再执行</h3>' +
+      '<div class="body" id="aiCfBody"></div>' +
+      '<div class="foot"><button type="button" class="sm" id="aiCfCancel">取消全部</button>' +
+      '<button type="button" class="primary write" id="aiCfOk">执行勾选项</button></div>';
+
+    var body = document.createElement('div');
+    body.style.maxHeight = '46vh'; body.style.overflowY = 'auto';
+    rows.forEach(function (r) { body.appendChild(r); });
+    modal.querySelector('#aiCfBody').appendChild(body);
+
+    var close = function () {
+      document.removeEventListener('keydown', onKey);
+      $('#bd').classList.remove('on');
+      document.body.classList.remove('modal-open');
+      closeAll();
+      if (modal && modal.parentNode) modal.parentNode.removeChild(modal);
+    };
+    var onKey = function (e) {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        close(); resolve(null);       // 用户按 Esc → 放弃本轮操作
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    modal.querySelector('#aiCfCancel').onclick = function () {
+      var appr = rows.map(function (row, i) {
+        return {tool: pending[i].tool, arguments: pending[i].arguments || {}, approved: false};
+      });
+      close(); resolve(appr);      // 全部取消 → 传给服务端回灌"已取消"
+    };
+    modal.querySelector('#aiCfOk').onclick = function () {
+      var appr = rows.map(function (row, i) {
+        var cb = row.querySelector('.ai-cf-cb');
+        return {tool: pending[i].tool, arguments: pending[i].arguments || {}, approved: !!(cb && cb.checked)};
+      });
+      close(); resolve(appr);
+    };
+    document.body.appendChild(modal);
+    $('#bd').classList.add('on');
+    document.body.classList.add('modal-open');
+  });
+}
+
+// 读取 NDJSON 流并逐条 callback；返回 Promise 解析为 done 事件(含 body)。
+// 至少需要 fetch + ReadableStream（现代浏览器）。返回 Promise<body>。
+function aiChatOnce(approve) {
+  const body = JSON.stringify({messages: AI_MSGS, approve: approve || null});
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + ($('#token').value || ''),
+  };
+  return fetch('/api/ai/chat?stream=1', {method: 'POST', headers, body})
+    .then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (raw) {
+          let msg = raw;
+          try { const j = JSON.parse(raw); msg = j.detail || j.message || raw; } catch (_) {}
+          throw new Error(String(msg).slice(0, 400));
+        });
+      }
+      if (!res.body || !res.body.getReader) {
+        // 不支持流 → 退化为 JSON
+        return res.json();
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buf = '';
+      let liveRow = null;
+      let liveDiv = null;
+      let usedStream = false;              // 走过流式读取路径 → 需保留实时气泡
+      function liveBubble() {
+        if (liveRow) return liveRow;
+        liveRow = aiShowTyping();           // 复用「正在思考」行承载流式文本
+        liveRow.classList.add('streaming');
+        usedStream = true;
+        liveDiv = liveRow.querySelector('.ai-bubble');
+        if (liveDiv) { liveDiv.classList.add('ai-md'); liveDiv.innerHTML = ''; }
+        return liveRow;
+      }
+      return new Promise(function (resolve, reject) {
+        function handle(finalEvt) {
+          if (liveDiv) { liveDiv.innerHTML = aiRenderMd(liveDiv.textContent || ''); }
+          if (usedStream) finalEvt = Object.assign({}, finalEvt, {_streamed: true});
+          resolve(finalEvt);
+        }
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) {
+              // 流结束，可能没收到显式 done（异常截断）→ 用累积文本兜底
+              if (!finalEvt) {
+                const text = (liveDiv ? liveDiv.textContent : '') || '';
+                finalEvt = {event: 'done', message: {role: 'assistant', content: text},
+                            pending: [], trace: [], messages: AI_MSGS, context: {compressed: false}};
+                handle(finalEvt);
+              }
+              return;
+            }
+            buf += decoder.decode(chunk.value || new Uint8Array(), {stream: true});
+            let idx;
+            while ((idx = buf.indexOf('\n')) >= 0) {
+              const line = buf.slice(0, idx).trim();
+              buf = buf.slice(idx + 1);
+              if (!line) continue;
+              let ev;
+              try { ev = JSON.parse(line); } catch (_) { continue; }
+              if (ev.event === 'delta' && typeof ev.text === 'string') {
+                liveBubble();
+                if (liveDiv) liveDiv.textContent = (liveDiv.textContent || '') + ev.text;
+              } else if (ev.event === 'done') {
+                finalEvt = ev;
+                handle(ev);
+                return;
+              } else if (ev.event === 'error' || ev.event === 'final') {
+                finalEvt = ev;
+                handle(ev);
+                return;
+              }
+            }
+            return pump();
+          }, function (err) { reject(err); });
+        }
+        let finalEvt = null;
+        pump();
+      });
+    });
+}
+
 async function aiSend() {
   const input = $('#aiInput');
   const text = (input && input.value || '').trim();
@@ -5844,21 +6013,46 @@ async function aiSend() {
   aiSaveHistory();
   const btn = $('#aiSendBtn');
   if (btn) btn.disabled = true;
-  aiShowTyping();
+  let approve = null;
   try {
-    const r = await api('/api/ai/chat', {
-      method: 'POST',
-      body: JSON.stringify({messages: AI_MSGS}),
-    });
-    aiHideTyping();
-    const msg = (r.message && r.message.content) || '（无回复）';
-    AI_MSGS.push({role: 'assistant', content: msg});
-    AI_MSGS = aiCompressLocalHistory(AI_MSGS);
-    aiSaveHistory();
-    aiAppendBubble('bot', msg, r.trace || []);
-    if (r.context && r.context.compressed) {
-      aiAppendBubble('sys', '上下文已自动压缩：' + (r.context.before_chars || '?') +
-        '→' + (r.context.after_chars || '?') + ' 字符');
+    while (true) {
+      aiShowTyping();
+      let r = await aiChatOnce(approve);   // 流式：delta 实时进入 #aiTyping，done 后 resolve
+      // 用服务端回灌的完整上下文覆盖本地，保证跨阶段连续性
+      if (r && r.messages && r.messages.length) {
+        AI_MSGS = r.messages;
+        AI_MSGS = aiCompressLocalHistory(AI_MSGS);
+        aiSaveHistory();
+      }
+      const pending = (r && r.pending) || [];
+      if (pending && pending.length) {
+        aiHideTyping();                    // 确认清单前收起打字气泡
+        const decision = await aiConfirmTools(pending);
+        if (decision === null) break;      // 对话框异常关闭
+        approve = decision;                // [] 表示取消全部 → 服务端回灌"已取消"
+        continue;                          // 再 POST，服务端执行批准项并继续
+      }
+      // 无 pending：最终回复
+      const msg = (r && r.message && r.message.content) || '（无回复）';
+      AI_MSGS.push({role: 'assistant', content: msg});
+      AI_MSGS = aiCompressLocalHistory(AI_MSGS);
+      aiSaveHistory();
+      const typing = $('#aiTyping');
+      if (r && r._streamed && typing) {
+        // 流式已实时渲染：把打字气泡转正为最终气泡并补 trace
+        typing.classList.remove('streaming');
+        const b = typing.querySelector('.ai-bubble');
+        if (b) { b.classList.add('ai-md'); b.innerHTML = aiRenderMd(msg); }
+        aiAppendTrace(typing.querySelector('.ai-bubble') || typing, (r && r.trace) || []);
+      } else {
+        aiHideTyping();
+        aiAppendBubble('bot', msg, (r && r.trace) || []);
+      }
+      if (r && r.context && r.context.compressed) {
+        aiAppendBubble('sys', '上下文已自动压缩：' + (r.context.before_chars || '?') +
+          '→' + (r.context.after_chars || '?') + ' 字符');
+      }
+      break;
     }
   } catch (e) {
     aiHideTyping();

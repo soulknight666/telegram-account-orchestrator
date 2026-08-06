@@ -424,8 +424,7 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 def generate_non_linux_api():
@@ -577,8 +576,7 @@ async def handle_shaihuo_document(update, context, user_id, user_states):
         await process_shaihuo(update, context, zip_path, user_id)
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
     except Exception as e:
         logger.error(f"处理文件失败: {e}")
         from bot import create_back_button
@@ -593,8 +591,7 @@ async def handle_shaihuo_document(update, context, user_id, user_states):
         user_states.pop(user_id, None)
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
 async def process_shaihuo(update, context, zip_path, user_id):
     from telegram import InlineKeyboardMarkup
@@ -738,14 +735,12 @@ async def _process_shaihuo_internal(update, context, zip_path, user_id, api_id, 
 成功: {len(accounts)}""",
                             parse_mode='HTML'
                         )
-                    except:
-                        pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
                 await asyncio.sleep(0.2)
 
             try:
                 await status_msg.delete()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
             if not accounts:
                 keyboard = [[create_back_button()]]
@@ -823,8 +818,7 @@ async def _process_shaihuo_internal(update, context, zip_path, user_id, api_id, 
 <tg-emoji emoji-id="5920052658743283381">✅</tg-emoji>存活: {alive_count} | <tg-emoji emoji-id="5985347654974967782">❄️</tg-emoji>冻结: {frozen_count} | <tg-emoji emoji-id="5922712343011135025">❌</tg-emoji>失效: {dead_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
             await asyncio.sleep(0.1)
 
@@ -965,6 +959,5 @@ async def _process_shaihuo_internal(update, context, zip_path, user_id, api_id, 
 
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
         log_time(f"筛活任务完全结束，总账号数={total_accounts}，存活={alive_count}，冻结={frozen_count}，失效={dead_count}")

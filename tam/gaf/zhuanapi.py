@@ -143,8 +143,7 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 def sanitize_2fa(text: str) -> str:
@@ -355,8 +354,7 @@ async def handle_api_document(update: Update, context: ContextTypes.DEFAULT_TYPE
         await process_conversion(update, context, zip_path, user_id, mode, two_fa)
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
     except Exception as e:
         logger.error(f"处理失败: {e}")
         keyboard = [[create_back_button()]]
@@ -370,8 +368,7 @@ async def handle_api_document(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_api_states.pop(user_id, None)
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
 async def process_conversion(update, context, zip_path, user_id, mode, manual_2fa=None):
     api_id = int(os.getenv("TELEGRAM_APP_ID"))
@@ -442,13 +439,11 @@ async def process_conversion(update, context, zip_path, user_id, mode, manual_2f
 成功: {len(accounts)}""",
                             parse_mode='HTML'
                         )
-                    except:
-                        pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
                 await asyncio.sleep(0.2)
             try:
                 await status_msg.delete()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
             if not accounts:
                 keyboard = [[create_back_button()]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -559,8 +554,7 @@ async def process_conversion(update, context, zip_path, user_id, mode, manual_2f
                         f"<tg-emoji emoji-id='5839200986022812209'>🔄</tg-emoji> 处理中: {i}/{len(accounts)}",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
             await asyncio.sleep(0.3)
         json_path = os.path.join("acd", "api.json")
         existing_data = {}

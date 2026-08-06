@@ -350,8 +350,7 @@ async def handle_2fa_document(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
         
     except Exception as e:
         logger.error(f"处理文件失败: {e}")
@@ -368,8 +367,7 @@ async def handle_2fa_document(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_2fa_states.pop(user_id, None)
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
 def generate_non_linux_api():
     max_attempts = 100
@@ -403,8 +401,7 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 async def convert_tdata_to_session_with_proxy(tdata_dir, output_dir, twofa, proxy_dict):
@@ -996,14 +993,12 @@ async def _process_2fa_internal(update, context, zip_path, user_id, api_id, api_
 成功: {len(accounts)}""",
                             parse_mode='HTML'
                         )
-                    except:
-                        pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
                 await asyncio.sleep(0.2)
             
             try:
                 await status_msg.delete()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             if not accounts:
                 keyboard = [[create_back_button()]]
@@ -1054,8 +1049,7 @@ async def _process_2fa_internal(update, context, zip_path, user_id, api_id, api_
 <tg-emoji emoji-id="5920052658743283381">✅</tg-emoji>成功: {success_count} | <tg-emoji emoji-id="5922612721244704425">♻️</tg-emoji>重置成功: {reset_success_count} | <tg-emoji emoji-id="5846008814129649022">⚠️</tg-emoji>重置失败: {reset_failed_count} | <tg-emoji emoji-id="5922712343011135025">❌</tg-emoji>失败: {failed_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             result = await check_session_2fa(
                 session_file, json_file, api_id, api_hash, 
@@ -1108,8 +1102,7 @@ async def _process_2fa_internal(update, context, zip_path, user_id, api_id, api_
                     logger.warning(f"更新 JSON 失败 {json_to_copy}: {e}")
                     try:
                         shutil.copy2(json_to_copy, os.path.join(account_folder, os.path.basename(json_to_copy)))
-                    except:
-                        pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             await asyncio.sleep(0.1)
         
@@ -1264,5 +1257,4 @@ async def _process_2fa_internal(update, context, zip_path, user_id, api_id, api_
         
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常

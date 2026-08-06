@@ -68,8 +68,7 @@ async def handle_merge_document(update: Update, context: ContextTypes.DEFAULT_TY
     for msg_id in session["messages"]:
         try:
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_id)
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
     session["messages"] = []
     
     file = await context.bot.get_file(document.file_id)
@@ -120,8 +119,7 @@ async def confirm_merge(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         for zip_path in zip_files:
             try:
                 os.remove(zip_path)
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
         user_merge_sessions.pop(user_id, None)
         user_states.pop(user_id, None)
 

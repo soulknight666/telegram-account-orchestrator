@@ -118,10 +118,15 @@ class Settings:
         _load_dotenv(Path(env_file))
         data_dir = Path(os.environ.get("TAM_DATA_DIR", "./data")).expanduser()
         data_dir.mkdir(parents=True, exist_ok=True)
-        master_key = os.environ.get("TAM_MASTER_KEY", "")
+        master_key = os.environ.get("TAM_MASTER_KEY", "").strip()
         if not master_key:
             raise RuntimeError(
                 "缺少 TAM_MASTER_KEY。请先运行: python -m tam.cli init-key"
+            )
+        if len(master_key) < 32:
+            raise RuntimeError(
+                f"TAM_MASTER_KEY 过短({len(master_key)}字符,需≥32)。"
+                "请删掉 .env 里的错误密钥行,重新运行 setup.py 生成。"
             )
         return Settings(
             data_dir=data_dir,

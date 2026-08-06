@@ -151,8 +151,8 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception:
+                pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 def safe_extract(zip_ref, target_dir):
@@ -320,8 +320,8 @@ async def create_single_passkey(session_file, json_file, out_dir, api_id, api_ha
                 try:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         json_config = json.load(f)
-                except:
-                    pass
+                except Exception:
+                    pass  # 静默:原GAF代码未捕获具体异常
             final_api_id = int(json_config.get('app_id', json_config.get('api_id', api_id)))
             final_api_hash = str(json_config.get('app_hash', json_config.get('api_hash', api_hash)))
             keys_to_check = ['twofa', '2fa', 'password', '2FA', 'twoFA', 'Password']
@@ -579,8 +579,8 @@ async def handle_passkey_document(update, context, user_id):
             await process_passkey_login(update, context, zip_path, user_id, status_msg)
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception:
+            pass  # 静默:原GAF代码未捕获具体异常
     except Exception as e:
         logger.error(f"Passkey 文件处理失败: {e}")
         keyboard = [[create_back_button()]]
@@ -592,9 +592,9 @@ async def handle_passkey_document(update, context, user_id):
     finally:
         try:
             await status_msg.delete()
-        except:
+        except Exception:
             pass
-
+  # 静默:原GAF代码未捕获具体异常
 async def process_passkey_create(update, context, zip_path, user_id, status_msg):
     api_id = int(os.getenv("TELEGRAM_APP_ID", "2040"))
     api_hash = os.getenv("TELEGRAM_APP_HASH", "b18441a1ff607e10a989891a5462e627")
@@ -641,13 +641,13 @@ async def process_passkey_create(update, context, zip_path, user_id, status_msg)
                 if i % 3 == 0 or i == len(tdata_dirs):
                     try:
                         await status_msg2.edit_text(f"<tg-emoji emoji-id='5942826671290715541'>🔄</tg-emoji> 转换进度: {i}/{len(tdata_dirs)} 成功: {len(accounts)}", parse_mode='HTML')
-                    except:
-                        pass
+                    except Exception:
+                        pass  # 静默:原GAF代码未捕获具体异常
                 await asyncio.sleep(0.2)
             try:
                 await status_msg2.delete()
-            except:
-                pass
+            except Exception:
+                pass  # 静默:原GAF代码未捕获具体异常
             if not accounts:
                 await context.bot.send_message(chat_id=update.effective_chat.id, text="<tg-emoji emoji-id='5886496611835581345'>❌</tg-emoji> 所有tdata转换失败", parse_mode='HTML')
                 return
@@ -660,8 +660,8 @@ async def process_passkey_create(update, context, zip_path, user_id, status_msg)
                         f"""<tg-emoji emoji-id="5942826671290715541">⚙️</tg-emoji> <b>正在创建 Passkey</b>\n\n进度: {idx}/{len(accounts)}\n<tg-emoji emoji-id="5920052658743283381">✅</tg-emoji> 成功: {success_count} | <tg-emoji emoji-id="5886496611835581345">❌</tg-emoji> 失败: {fail_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception:
+                    pass  # 静默:原GAF代码未捕获具体异常
             is_ok, reason = await create_single_passkey(session_file, json_file, out_dir, api_id, api_hash)
             if is_ok:
                 success_count += 1
@@ -711,8 +711,8 @@ async def process_passkey_login(update, context, zip_path, user_id, status_msg):
                         f"""<tg-emoji emoji-id="5942826671290715541">⚙️</tg-emoji> <b>正在通过 Passkey 登录</b>\n\n进度: {i}/{len(passkey_files)}\n<tg-emoji emoji-id="5920052658743283381">✅</tg-emoji> 成功: {success_count} | <tg-emoji emoji-id="5886496611835581345">❌</tg-emoji> 失败: {fail_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception:
+                    pass  # 静默:原GAF代码未捕获具体异常
             is_ok, reason = await login_single_passkey(pk_file, out_dir, api_id, api_hash)
             if is_ok:
                 success_count += 1

@@ -184,8 +184,7 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 async def convert_tdata_to_session_with_proxy(tdata_dir, output_dir, twofa, proxy_dict):
@@ -463,12 +462,10 @@ async def handle_destroy_document(update, context, user_id):
         if zip_path and os.path.exists(zip_path):
             try:
                 os.remove(zip_path)
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
 async def process_destroy(update, context, zip_path, user_id):
     api_id_str = os.getenv("TELEGRAM_APP_ID")
@@ -602,14 +599,12 @@ async def _process_destroy_internal(update, context, zip_path, user_id, api_id, 
 成功: {len(accounts)}""",
                             parse_mode='HTML'
                         )
-                    except:
-                        pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
                 await asyncio.sleep(0.2)
 
             try:
                 await status_msg.delete()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
             if not accounts:
                 keyboard = [[InlineKeyboardButton("返回主菜单", callback_data="back_to_main").to_dict() | {"icon_custom_emoji_id": BACK_BUTTON_EMOJI_ID}]]
@@ -652,8 +647,7 @@ async def _process_destroy_internal(update, context, zip_path, user_id, api_id, 
 <tg-emoji emoji-id="5920052658743283381">✅</tg-emoji>成功: {success_count} | <tg-emoji emoji-id="5886496611835581345">❌</tg-emoji>失败: {failed_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
             success, reason, account_phone = await destroy_session(session_file, json_file, api_id, api_hash, tdata_dir)
             phone_number = account_phone or phone or os.path.splitext(os.path.basename(session_file))[0]
@@ -669,8 +663,7 @@ async def _process_destroy_internal(update, context, zip_path, user_id, api_id, 
                 shutil.copy2(session_file, os.path.join(account_folder, os.path.basename(session_file)))
                 if json_file and os.path.exists(json_file):
                     shutil.copy2(json_file, os.path.join(account_folder, os.path.basename(json_file)))
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
             if not success:
                 error_file = os.path.join(account_folder, "error.txt")
@@ -778,5 +771,4 @@ async def _process_destroy_internal(update, context, zip_path, user_id, api_id, 
 
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常

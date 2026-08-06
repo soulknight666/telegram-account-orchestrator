@@ -384,8 +384,7 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 async def convert_tdata_to_session_with_proxy(tdata_dir, output_dir, twofa, proxy_dict):
@@ -839,8 +838,7 @@ async def handle_privacy_document(update: Update, context: ContextTypes.DEFAULT_
         
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
         
     except Exception as e:
         logger.error(f"处理文件失败: {e}")
@@ -856,8 +854,7 @@ async def handle_privacy_document(update: Update, context: ContextTypes.DEFAULT_
         user_privacy_states.pop(user_id, None)
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
 async def _process_privacy_internal(update, context, zip_path, user_id, api_id, api_hash, admins, privacy_settings_data):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -950,14 +947,12 @@ async def _process_privacy_internal(update, context, zip_path, user_id, api_id, 
 成功: {len(accounts)}""",
                             parse_mode='HTML'
                         )
-                    except:
-                        pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
                 await asyncio.sleep(0.2)
             
             try:
                 await status_msg.delete()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             if not accounts:
                 keyboard = [[create_back_button()]]
@@ -999,8 +994,7 @@ async def _process_privacy_internal(update, context, zip_path, user_id, api_id, 
 <tg-emoji emoji-id="5920052658743283381">✅</tg-emoji>成功: {success_count} | <tg-emoji emoji-id="5922712343011135025">❌</tg-emoji>失败: {failed_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             result = await check_session_privacy(
                 session_file, json_file, api_id, api_hash, privacy_settings_data, tdata_dir
@@ -1027,8 +1021,7 @@ async def _process_privacy_internal(update, context, zip_path, user_id, api_id, 
             if json_path_to_copy and os.path.exists(json_path_to_copy):
                 try:
                     shutil.copy2(json_path_to_copy, os.path.join(account_folder, os.path.basename(json_path_to_copy)))
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             await asyncio.sleep(0.1)
         
@@ -1135,5 +1128,4 @@ async def _process_privacy_internal(update, context, zip_path, user_id, api_id, 
         
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常

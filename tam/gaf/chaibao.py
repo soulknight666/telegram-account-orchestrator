@@ -119,14 +119,14 @@ async def handle_unpack_document(update: Update, context: ContextTypes.DEFAULT_T
         user_unpack_states.pop(user_id, None)
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception:
+            pass  # 静默:原GAF代码未捕获具体异常
     finally:
         try:
             await status_msg.delete()
-        except:
+        except Exception:
             pass
-
+  # 静默:原GAF代码未捕获具体异常
 async def analyze_zip(zip_path, user_id, update, context):
     # 解压扫盘是阻塞活，丢线程里做，别卡住机器人的事件循环
     info = await asyncio.to_thread(core.analyze, zip_path)
@@ -204,8 +204,8 @@ async def process_unpack(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     finally:
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception:
+            pass  # 静默:原GAF代码未捕获具体异常
         user_unpack_states.pop(user_id, None)
 
 async def _process_unpack_internal(update, context, user_id, zip_path, format_type, numbers, total_count, admins):

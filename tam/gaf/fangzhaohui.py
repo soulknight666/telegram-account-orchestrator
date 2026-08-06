@@ -199,8 +199,8 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception:
+                pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 async def convert_tdata_to_session_with_proxy(tdata_dir, output_dir, twofa, proxy_dict):
@@ -454,9 +454,9 @@ async def handle_recovery_document(update: Update, context: ContextTypes.DEFAULT
                 os.remove(zip_path)
             if extract_dir and os.path.exists(extract_dir):
                 shutil.rmtree(extract_dir, ignore_errors=True)
-        except:
+        except Exception:
             pass
-
+  # 静默:原GAF代码未捕获具体异常
 async def handle_recovery_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = str(query.from_user.id)
@@ -518,9 +518,9 @@ async def process_recovery_task(update: Update, context: ContextTypes.DEFAULT_TY
             task.cancel()
             try:
                 await task
-            except:
+            except Exception:
                 pass
-
+  # 静默:原GAF代码未捕获具体异常
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"<tg-emoji emoji-id='5778527486270770928'>⚠️</tg-emoji> 任务执行超时 ({MAX_TASK_TIME}秒)，但已完成的账号会继续发送",
@@ -568,9 +568,9 @@ async def _process_recovery_internal(update, context, user_id, session_files, ex
 <tg-emoji emoji-id="5775887550262546277">⏳</tg-emoji> 正在处理 {os.path.basename(session_path)}...""",
                 parse_mode='HTML'
             )
-        except:
+        except Exception:
             pass
-
+  # 静默:原GAF代码未捕获具体异常
         session_basename = os.path.basename(session_path)
         session_name = os.path.splitext(session_basename)[0]
 
@@ -698,9 +698,9 @@ async def _process_recovery_internal(update, context, user_id, session_files, ex
 
     try:
         await status_msg.delete()
-    except:
+    except Exception:
         pass
-
+  # 静默:原GAF代码未捕获具体异常
 async def generate_json_for_session(session_file, client, me, api_id, api_hash, official_api):
     json_path = session_file.replace('.session', '.json')
     phone = me.phone if me.phone else os.path.basename(session_file).replace('.session', '')

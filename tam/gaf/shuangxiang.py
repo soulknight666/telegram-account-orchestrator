@@ -251,8 +251,7 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
     return None
 
 async def convert_tdata_to_session_with_proxy(tdata_dir, output_dir, twofa, proxy_dict):
@@ -624,16 +623,14 @@ async def handle_bidirectional_document(update: Update, context: ContextTypes.DE
         if zip_path and os.path.exists(zip_path):
             try:
                 os.remove(zip_path)
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
         
         context.user_data.pop('bidirectional_state', None)
         user_bidirectional_states.pop(user_id, None)
         
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
 
 async def process_bidirectional(update, context, zip_path, user_id):
     api_id_str = os.getenv("TELEGRAM_APP_ID")
@@ -768,14 +765,12 @@ async def _process_bidirectional_internal(update, context, zip_path, user_id, ap
 成功: {len(accounts)}""",
                             parse_mode='HTML'
                         )
-                    except:
-                        pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
                 await asyncio.sleep(0.2)
             
             try:
                 await status_msg.delete()
-            except:
-                pass
+            except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             if not accounts:
                 keyboard = [[create_back_button()]]
@@ -819,8 +814,7 @@ async def _process_bidirectional_internal(update, context, zip_path, user_id, ap
 <tg-emoji emoji-id="5920052658743283381">✅</tg-emoji>无限制: {unlimited_count} | <tg-emoji emoji-id="5922712343011135025">⚠️</tg-emoji>有限制: {limited_count} | <tg-emoji emoji-id="5886496611835581345">❌</tg-emoji>失败: {failed_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             result = await process_session(session_file, json_file, api_id, api_hash, tdata_dir)
             
@@ -848,8 +842,7 @@ async def _process_bidirectional_internal(update, context, zip_path, user_id, ap
             if json_to_copy and os.path.exists(json_to_copy):
                 try:
                     shutil.copy2(json_to_copy, os.path.join(account_folder, os.path.basename(json_to_copy)))
-                except:
-                    pass
+                except Exception: pass  # 静默:原GAF代码未捕获具体异常
             
             await asyncio.sleep(0.1)
         
@@ -974,5 +967,4 @@ async def _process_bidirectional_internal(update, context, zip_path, user_id, ap
         
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常

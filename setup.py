@@ -367,7 +367,11 @@ def main() -> None:
     updates: dict[str, str] = {}
 
     if not unset(env.get("TAM_MASTER_KEY")):
-        ok("主密钥已存在，保持不变（换掉会导致已存会话无法解密）")
+        ok("主密钥已存在,保持不变(换掉会导致已存会话无法解密)")
+        # 防御:验证现有密钥不是空值或过短
+        existing = env.get("TAM_MASTER_KEY", "").strip()
+        if len(existing) < 32:
+            die("⚠️  .env 里的 TAM_MASTER_KEY 过短或为空,会导致加密失败。请删掉该行重新运行 setup.py 生成。")
     else:
         updates["TAM_MASTER_KEY"] = gen_master_key()
         ok("已生成主密钥 TAM_MASTER_KEY")

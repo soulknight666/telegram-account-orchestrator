@@ -161,15 +161,15 @@ def read_2fa_from_folder(folder_path: str) -> Optional[str]:
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception:
+                pass  # 静默:原GAF代码未捕获具体异常
         elif not ext and file.lower() in allowed_names:
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
+            except Exception:
                 pass
-    
+      # 静默:原GAF代码未捕获具体异常
     for file in os.listdir(folder_path):
         if file.lower().endswith('.json'):
             try:
@@ -178,7 +178,7 @@ def read_2fa_from_folder(folder_path: str) -> Optional[str]:
                     for key, value in data.items():
                         if key.lower() in allowed_names and value:
                             return str(value).strip()
-            except:
+            except Exception as e:
                 continue
     
     return None
@@ -502,13 +502,13 @@ async def handle_convert_document(update: Update, context: ContextTypes.DEFAULT_
         if zip_path and os.path.exists(zip_path):
             try:
                 os.remove(zip_path)
-            except:
-                pass
+            except Exception:
+                pass  # 静默:原GAF代码未捕获具体异常
         try:
             await status_msg.delete()
-        except:
+        except Exception:
             pass
-
+  # 静默:原GAF代码未捕获具体异常
 async def process_session_to_tdata(update: Update, context: ContextTypes.DEFAULT_TYPE, zip_path: str, user_id: str):
     with tempfile.TemporaryDirectory() as temp_dir:
         extract_dir = os.path.join(temp_dir, "extracted")
@@ -595,15 +595,15 @@ async def process_session_to_tdata(update: Update, context: ContextTypes.DEFAULT
 <tg-emoji emoji-id="5922712343011135025">❌</tg-emoji>失败: {len(failed_items)}""",
                         parse_mode=ParseMode.HTML
                     )
-                except:
-                    pass
+                except Exception:
+                    pass  # 静默:原GAF代码未捕获具体异常
             await asyncio.sleep(0.1)
 
         try:
             await status_msg.delete()
-        except:
+        except Exception:
             pass
-
+  # 静默:原GAF代码未捕获具体异常
         if success_items:
             success_zip_name = f"session_to_tdata_success_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
             success_zip_path = os.path.join(temp_dir, success_zip_name)
@@ -750,15 +750,15 @@ async def process_tdata_to_session(update: Update, context: ContextTypes.DEFAULT
 • <tg-emoji emoji-id="5922712343011135025">❌</tg-emoji>失败: {len(failed_items)}""",
                         parse_mode=ParseMode.HTML
                     )
-                except:
-                    pass
+                except Exception:
+                    pass  # 静默:原GAF代码未捕获具体异常
             await asyncio.sleep(0.1)
 
         try:
             await status_msg.delete()
-        except:
+        except Exception:
             pass
-
+  # 静默:原GAF代码未捕获具体异常
         if success_items:
             success_zip_name = f"tdata_to_session_success_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
             success_zip_path = os.path.join(temp_dir, success_zip_name)

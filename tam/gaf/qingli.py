@@ -154,7 +154,13 @@ async def delete_passkeys_for_client(client):
         except Exception as e:
             err_msg = str(e)
             if "Remaining bytes:" in err_msg:
-                raw_data = eval(err_msg.split("Remaining bytes: ")[1])
+                import ast
+                try:
+                    raw_data = ast.literal_eval(err_msg.split("Remaining bytes: ")[1])
+                except (ValueError, SyntaxError):
+                    logger.error(f"无法解析 Remaining bytes: {err_msg[:200]}")
+                    errors.append(f"获取Passkey列表失败: {err_msg}")
+                    return deleted_count, errors
                 passkeys = parse_raw_passkeys(raw_data)
                 logger.info(f"通过原始解析获取到 {len(passkeys)} 个Passkey")
                 for pk in passkeys:
@@ -288,8 +294,8 @@ def read_2fa_from_folder(folder_path: str):
             try:
                 with open(os.path.join(folder_path, file), 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except:
-                pass
+            except Exception:
+                pass  # 静默:读取可选 2FA 文件失败不影响流程
     return None
 
 async def convert_tdata_to_session_with_proxy(tdata_dir, output_dir, twofa, proxy_dict):
@@ -460,8 +466,8 @@ async def handle_clean_document(update: Update, context: ContextTypes.DEFAULT_TY
         await process_clean(update, context, zip_path, user_id, clean_type)
         try:
             os.remove(zip_path)
-        except:
-            pass
+        except Exception:
+            pass  # 静默:临时文件删除失败不影响业务
     except Exception as e:
         logger.error(f"处理文件失败: {e}")
         keyboard = [[create_back_button()]]
@@ -475,8 +481,8 @@ async def handle_clean_document(update: Update, context: ContextTypes.DEFAULT_TY
         user_clean_states.pop(user_id, None)
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception:
+            pass  # 静默:状态消息删除失败不影响流程
 
 def get_total_size(path):
     total = 0
@@ -759,14 +765,14 @@ async def _process_clean_internal(update, context, zip_path, user_id, api_id, ap
 成功: {len(accounts)}""",
                             parse_mode='HTML'
                         )
-                    except:
-                        pass
+                    except Exception:
+                        pass  # 静默:进度消息更新失败不阻塞流程
                 await asyncio.sleep(0.2)
-            
+
             try:
                 await status_msg.delete()
-            except:
-                pass
+            except Exception:
+                pass  # 静默:状态消息删除失败不影响流程
             
             if not accounts:
                 keyboard = [[create_back_button()]]
@@ -815,8 +821,8 @@ async def _process_clean_internal(update, context, zip_path, user_id, api_id, ap
 <tg-emoji emoji-id="5920052658743283381">✅</tg-emoji>成功: {success_count} | <tg-emoji emoji-id="5922712343011135025">❌</tg-emoji>失败: {failed_count}""",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception:
+                    pass  # 静默:进度消息更新失败不阻塞流程
 
             account_start = time.time()
             log_time(f"开始清理账号 {os.path.basename(session_file)}")
@@ -1096,5 +1102,5 @@ async def _process_clean_internal(update, context, zip_path, user_id, api_id, ap
 
         try:
             await status_msg.delete()
-        except:
-            pass
+        except Exception:
+            pass  # 静默:状态消息删除失败不影响流程

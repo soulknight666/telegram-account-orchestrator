@@ -5455,9 +5455,13 @@ function renderAiConfigForm() {
       '<label class="row" style="gap:8px;margin:4px 0 0;font-size:12.5px">' +
       '<input type="checkbox" id="aiReqConfirm"' + (c.require_confirm_destructive !== false ? ' checked' : '') + ' />' +
       '<span>危险工具(注销/退出/删会话)执行前需确认</span></label>' +
+      '<div class="ai-hint" style="color:#d32f2f;font-size:11.5px;margin:2px 0 6px 24px;line-height:1.4">' +
+      '⚠️ <strong>关闭此项后,AI 可直接执行注销、删号等不可逆操作,无需人工确认。</strong>请仅在完全信任模型判断时关闭。</div>' +
       '<label class="row" style="gap:8px;margin:4px 0 0;font-size:12.5px">' +
       '<input type="checkbox" id="aiReqWrite"' + (c.confirm_write !== false ? ' checked' : '') + ' />' +
       '<span>改动类工具(改二验/资料/隐私/发消息等)执行前需确认</span></label>' +
+      '<div class="ai-hint" style="color:#d32f2f;font-size:11.5px;margin:2px 0 0 24px;line-height:1.4">' +
+      '⚠️ <strong>关闭此项后,AI 可直接修改账号设置、发送消息,无需人工确认。</strong>建议保持开启。</div>' +
     '</div>' +
 
     '<div class="ai-actions">' +

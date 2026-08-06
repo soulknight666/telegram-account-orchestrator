@@ -149,7 +149,7 @@ async def handle_ban_document(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     finally:
         try: os.remove(txt_path)
-        except: pass
+        except Exception: pass  # 静默:原GAF代码未捕获具体异常
         user_ban_states.pop(user_id, None)
 
 async def process_ban_check(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str, phones: list):
@@ -208,7 +208,7 @@ async def process_ban_check(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 unbanned.append(phone)
                 if client:
                     try: await client.disconnect()
-                    except: pass
+                    except Exception: pass  # 静默:原GAF代码未捕获具体异常
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         banned_file = os.path.join(temp_dir, "banned.txt")

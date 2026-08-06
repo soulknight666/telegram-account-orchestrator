@@ -403,6 +403,7 @@ def _call_openai_compatible(
     tools: list[dict[str, Any]],
     temperature: float,
     azure: bool = False,
+    timeout: float = 120.0,
 ) -> tuple[str, list[dict[str, Any]]]:
     """返回 (assistant_text, tool_calls_as_openai_shape)."""
     if azure:
@@ -428,7 +429,7 @@ def _call_openai_compatible(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-    data = _http_json(url, payload, headers=headers)
+    data = _http_json(url, payload, headers=headers, timeout=timeout)
     choice = (data.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
     content = msg.get("content") or ""
@@ -458,6 +459,7 @@ def _call_anthropic(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     temperature: float,
+    timeout: float = 120.0,
 ) -> tuple[str, list[dict[str, Any]]]:
     url = f"{base.rstrip('/')}/v1/messages"
     if base.rstrip("/").endswith("/v1"):
@@ -488,7 +490,7 @@ def _call_anthropic(
         last.setdefault("cache_control", {"type": "ephemeral"})
         tools[-1] = last
         payload["tools"] = tools
-    data = _http_json(url, payload, headers=headers)
+    data = _http_json(url, payload, headers=headers, timeout=timeout)
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     for block in data.get("content") or []:
@@ -517,6 +519,7 @@ def _call_gemini(
     contents: list[dict[str, Any]],
     function_decls: list[dict[str, Any]],
     temperature: float,
+    timeout: float = 120.0,
 ) -> tuple[str, list[dict[str, Any]]]:
     # base: https://generativelanguage.googleapis.com/v1beta
     model_id = model if model.startswith("models/") else model
@@ -882,6 +885,7 @@ async def run_chat(
     base = _normalize_base(cfg.get("base_url") or "", provider)
     model = (cfg.get("model") or "gpt-4o-mini").strip()
     temperature = float(cfg.get("temperature") or 0.2)
+    llm_timeout = getattr(settings, "llm_timeout", 120.0)  # 向后兼容:旧 Settings 无此字段
 
     tools_oai = _openai_tools(cfg)
     tools_ant = _anthropic_tools(cfg)
@@ -955,7 +959,7 @@ async def run_chat(
                 _call_anthropic,
                 base=base, api_key=api_key, model=model,
                 system=sys_a or system, messages=msgs_a,
-                tools=tools_ant, temperature=temperature,
+                tools=tools_ant, temperature=temperature, timeout=llm_timeout,
             )
         elif provider == "gemini":
             sys_g, contents = _msgs_to_gemini(messages)
@@ -963,21 +967,21 @@ async def run_chat(
                 _call_gemini,
                 base=base, api_key=api_key, model=model,
                 system=sys_g or system, contents=contents,
-                function_decls=tools_gem, temperature=temperature,
+                function_decls=tools_gem, temperature=temperature, timeout=llm_timeout,
             )
         elif provider == "azure_openai":
             content, tool_calls = await asyncio.to_thread(
                 _call_openai_compatible,
                 base=base, api_key=api_key, model=model,
                 messages=messages, tools=tools_oai,
-                temperature=temperature, azure=True,
+                temperature=temperature, azure=True, timeout=llm_timeout,
             )
         else:
             content, tool_calls = await asyncio.to_thread(
                 _call_openai_compatible,
                 base=base, api_key=api_key, model=model,
                 messages=messages, tools=tools_oai,
-                temperature=temperature, azure=False,
+                temperature=temperature, azure=False, timeout=llm_timeout,
             )
 
         if content:

@@ -72,7 +72,7 @@ async def main() -> None:
         0: (None, [_tool_call("update_account", {"account_id": 1, "fields": {"label": "x"}})]),
     }
     orig_call = ap._call_openai_compatible
-    def _fake_llm(*, base, api_key, model, messages, tools, temperature, azure=False):
+    def _fake_llm(*, base, api_key, model, messages, tools, temperature, azure=False, timeout=120.0):
         round_i = len([m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")])
         return script.get(round_i, ("完成", []))  # type: ignore[return-value]
     ap._call_openai_compatible = _fake_llm  # type: ignore
@@ -99,7 +99,7 @@ async def main() -> None:
         ]),
         1: ("已办妥。", []),                                  # 批准执行轮之后：模型收尾
     }
-    def _fake_llm2(*, base, api_key, model, messages, tools, temperature, azure=False):
+    def _fake_llm2(*, base, api_key, model, messages, tools, temperature, azure=False, timeout=120.0):
         round_i = len([m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")])
         return script.get(round_i, ("完成", []))  # type: ignore[return-value]
     ap._call_openai_compatible = _fake_llm2  # type: ignore

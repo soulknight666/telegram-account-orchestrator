@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Telegram Account Orchestrator (TAO) — Self-hosted Multi-Account Manager</title>
+<meta name="description" content="Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and tdata import." />
+<meta property="og:title" content="Telegram Account Orchestrator (TAO)" />
+<meta property="og:description" content="Self-hosted Telegram account manager and orchestration toolkit." />
+<style>
+  /* CSS_PLACEHOLDER */
+</style>
+</head>
+<body>
+<header>
+  <h1>✈️ Telegram 账号管理器 <span class="pill" id="mode">完整权限</span></h1>
+  <span class="sp"></span>
+  <input id="token" placeholder="访问令牌（免令牌模式留空）" style="max-width:230px" />
+  <label class="row muted fit" style="gap:4px"><input type="checkbox" id="auto" style="width:16px;min-height:0" /> 自动刷新</label>
+  <button class="fit" onclick="runDoctor()" title="一键校验环境/依赖/密钥/数据库/tdata，能修的自动修">一键体检</button>
+  <button class="fit write" onclick="hotReload()" title="真实重启后端进程（热重载），进行中的任务会中断">热重载</button>
+  <button class="fit" onclick="openAiPanel()" title="AI 对话与权限配置">AI 助手</button>
+  <button class="fit" onclick="openErrorLog()" title="服务端与前端错误日志，可导出上报">错误日志</button>
+  <button class="fit" id="editBtn" onclick="toggleEdit()" title="拖动移位置、拖边缘改大小、点右上角 × 隐藏">编辑布局</button>
+  <button class="fit" onclick="openHelp()" title="功能说明与使用文档">帮助</button>
+  <button class="fit" onclick="refresh()">刷新</button>
+</header>
+<div class="demo" id="demoBar">演示模式：当前展示的是示例数据，未连接后端。启动 <code>python -m tam.cli serve</code> 后打开 http://127.0.0.1:8848 即为真实数据。</div>
+<div class="bar"><i id="prog"></i></div>
+
+<main>
+  <div class="board" id="board">
+  <div class="ph" id="ph"></div>
+
+  <div class="card kickbar" id="kickbar" data-widget="kickbar" style="display:none">
+    <span id="kickText" class="muted">—</span>
+    <span class="sp" style="flex:1"></span>
+    <label class="row" style="gap:6px;margin:0" title="踢失败或校验未通过后隔多久重试。写法：45s / 10m / 2h / 1h30m">
+      <span class="muted" style="white-space:nowrap">失败重试</span>
+      <input id="kickRetry" style="width:96px;min-height:0;padding:4px 8px" placeholder="1h" />
+    </label>
+    <button class="fit write" onclick="saveKickRetry()" title="保存重试间隔（留空恢复默认）">保存</button>
+    <button class="fit write" onclick="kickNow()" title="不等后台定时器，立即对到期账号清一次其它设备">立即执行</button>
+  </div>
+
+  <div class="card" data-widget="accounts">
+    <div class="toolbar">
+      <input id="q" placeholder="搜索别名 / 手机号 / 用户名 / 标签" style="max-width:260px" oninput="render()" />
+      <span class="row fit" id="chips"></span>
+      <span class="row fit quick-filters" id="qfilters"></span>
+      <span class="sp" style="flex:1"></span>
+      <button class="fit" onclick="openModal('mAdd')">添加账号</button>
+      <button class="fit" onclick="openModal('mImport')">批量导入</button>
+      <button class="fit" onclick="openModal('mSession')">session 导入</button>
+      <button class="fit" onclick="openModal('mTdata')">tdata 导入</button>
+    </div>
+    <div class="bulk" id="bulk">
+      <b id="selN">已选 0 个</b>
+      <button class="sm" onclick="bulk('check')">健康检查</button>
+      <button class="sm write" onclick="bulk('auto')">自动登录</button>
+      <button class="sm write" onclick="openModal('mSend')">发消息</button>
+      <button class="sm write" onclick="bulkWarmup()">养号</button>
+      <button class="sm" onclick="proxyAudit()">代理体检</button>
+      <button class="sm write" onclick="bulkOkpay()">OKPay余额</button>
+      <button class="sm write" onclick="bulkTerminate()">踢出设备</button>
+      <button class="sm write" onclick="bulkTag()">打标签</button>
+      <button class="sm write" onclick="bulkExport('pack')">导出号包</button>
+      <button class="sm write" onclick="bulkExport('session')">导出.session</button>
+      <button class="sm danger write" onclick="bulkRegen()">重生会话</button>
+      <button class="sm danger write" onclick="bulkDelete()">删除本地</button>
+      <button class="sm danger write" onclick="bulkDeleteTelegram()">注销TG账号</button>
+      <span class="sp" style="flex:1"></span>
+      <button class="sm" onclick="clearSel()">取消选择</button>
+</div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th style="width:36px"><input type="checkbox" id="all" style="width:16px;min-height:0" onclick="toggleAll(this.checked)" /></th>
+          <th>别名</th><th>手机号</th><th class="hide-s">国家/地区</th><th class="hide-s">用户名</th><th>状态</th>
+          <th class="hide-s" title="两步验证密码；默认打码，点眼睛查看">二验</th>
+          <th class="hide-s">代理</th><th class="hide-s">取码</th><th class="hide-s">标签</th>
+          <th class="hide-s" title="登录满设定时长后自动踢出其它设备">清设备</th><th>操作</th>
+        </tr></thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card pane" data-widget="logText">
+    <h3>操作日志 · 中文摘要 <span class="muted" id="logHint">最近 20 条</span>
+      <span class="sp" style="flex:1"></span>
+      <span class="muted" id="logPin" style="display:none;font-size:12px">已锁定操作结果</span>
+      <button class="sm fit" onclick="unpinLog()">恢复自动日志</button></h3>
+    <pre id="log">—</pre>
+  </div>
+
+  <div class="card pane" data-widget="tasks">
+    <h3>任务中心 <span class="muted" id="taskHint">暂无任务</span>
+      <span class="sp" style="flex:1"></span>
+      <button class="sm fit write" onclick="newCollectTask()" title="按最近活跃情况采集群组发言人">采集发言人</button>
+      <button class="sm fit write" onclick="newMessageTask()" title="支持富文本与可点击超链接">新建群发</button>
+      <button class="sm fit" onclick="loadTasks(true)">刷新</button></h3>
+    <div class="scroll" id="taskList"><span class="muted">还没有任务。可以先采集发言人，再对采集结果群发。</span></div>
+  </div>
+
+  <div class="card pane" data-widget="leads">
+    <h3>线索库 <span class="muted" id="leadHint"></span>
+      <span class="sp" style="flex:1"></span>
+      <button class="sm fit" onclick="exportLeads()">导出 CSV</button>
+      <button class="sm fit" onclick="loadLeads()">刷新</button></h3>
+    <div class="scroll" id="leadList"><span class="muted">还没有采集到线索。</span></div>
+  </div>
+
+  <div class="card pane" data-widget="logJson">
+    <h3>操作日志 · 原始数据（JSON）</h3>
+    <pre id="logRaw">—</pre>
+  </div>
+
+  <div class="card pane" data-widget="settings">
+    <h3>参数面板 <span class="muted" id="setHint"></span>
+      <span class="sp" style="flex:1"></span>
+      <button class="sm fit write" onclick="saveSettings()" title="只提交改动过的项">保存修改</button>
+      <button class="sm fit write" onclick="resetSettings()" title="把所有参数恢复默认值（密钥不动）">恢复默认</button>
+      <button class="sm fit" onclick="loadSettings()">刷新</button></h3>
+    <div class="scroll" id="setBody"><span class="muted">加载中…</span></div>
+  </div>
+
+  <div class="card pane" data-widget="toolbox">
+    <h3>工具箱 <span class="muted" id="tbHint">直接作用于库里选中的号</span>
+      <span class="sp" style="flex:1"></span>
+      <button class="sm fit" onclick="loadOps()">刷新</button></h3>
+    <div class="scroll" id="tbBody"><span class="muted">加载中…</span></div>
+  </div>
+
+  <div class="card pane" data-widget="ziptools">
+    <h3>ZIP 工具 <span class="muted">号包拆分 / 合并 / 注册时间 / 转 API</span>
+      <span class="sp" style="flex:1"></span>
+      <button class="sm fit" onclick="renderZt()">刷新</button></h3>
+    <div class="scroll" id="ztBody"><span class="muted">加载中…</span></div>
+  </div>
+
+  <script>
+  // 参数面板。字段全由 /api/settings 动态下发，后端加新参数不用改这里。
+  let SET_ORIG = {};   // 原始值，用来算哪些真的改动过了
+  let SET_SPECS = {};  // key -> spec
+
+  function setInputId(k) { return 'set_' + k; }
+
+  function setFieldHtml(f) {
+    const id = setInputId(f.key);
+    const tip = esc(f.desc || '');
+    const warn = f.restart_required
+      ? ' <span class="muted" title="这项启动时就读进去了，改完要重启才生效">↺</span>' : '';
+    let input;
+    if (f.type === 'bool') {
+      const on = String(f.value) === '1' ? ' checked' : '';
+      input = `<input type="checkbox" id="${id}" style="width:16px;min-height:0"${on} />`;
+    } else if (f.type.indexOf('choice:') === 0) {
+      const opts = f.type.split(':')[1].split(',').map(o =>
+        `<option value="${esc(o)}"${o === f.value ? ' selected' : ''}>${esc(o)}</option>`).join('');
+      input = `<select id="${id}" style="min-height:0;padding:4px 8px">${opts}</select>`;
+    } else {
+      const num = (f.type === 'int' || f.type === 'float') ? ' inputmode="decimal"' : '';
+      input = `<input id="${id}" value="${esc(f.value)}" placeholder="${esc(f.default)}"`
+            + `${num} style="min-height:0;padding:4px 8px;max-width:230px" />`;
+    }
+    return `<div class="row" style="gap:8px;align-items:center;padding:4px 0">
+      <code style="min-width:210px;font-size:12px">${esc(f.key)}${warn}</code>
+      ${input}
+      <span class="muted" style="font-size:12px;flex:1">${tip}</span>
+    </div>`;
+  }
+
+  async function loadSettings() {
+    const box = $('#setBody');
+    try {
+      const d = await api('/api/settings');
+      SET_ORIG = {}; SET_SPECS = {};
+      let html = '';
+      for (const [group, fields] of Object.entries(d.groups || {})) {
+        html += `<h4 style="margin:12px 0 2px;font-size:13px">${esc(group)}</h4>`;
+        for (const f of fields) {
+          SET_ORIG[f.key] = String(f.value);
+          SET_SPECS[f.key] = f;
+          html += setFieldHtml(f);
+        }
+      }
+      if (d.secrets && d.secrets.length) {
+        html += `<h4 style="margin:12px 0 2px;font-size:13px">密钥</h4>`
+              + `<div class="muted" style="font-size:12px;margin-bottom:4px">`
+              + `为安全起见不回显明文。留空=不改动，填了才会覆盖。</div>`;
+        for (const s of d.secrets) {
+          html += `<div class="row" style="gap:8px;align-items:center;padding:4px 0">
+            <code style="min-width:210px;font-size:12px">${esc(s.key)}</code>
+            <input id="${setInputId(s.key)}" type="password" placeholder="${s.set ? '已设置，留空不改' : '未设置'}"
+                   style="min-height:0;padding:4px 8px;max-width:230px" />
+            <span class="muted" style="font-size:12px;flex:1">${s.set ? '✓ 已设置' : '— 未设置'}</span>
+          </div>`;
+          SET_SPECS[s.key] = {key: s.key, type: 'secret'};
+        }
+      }
+      box.innerHTML = html || '<span class="muted">没有可调参数。</span>';
+      $('#setHint').textContent = d.env_path ? ('写入 ' + d.env_path) : '';
+    } catch (e) {
+      box.innerHTML = `<span class="muted">读取失败：${esc(e.message)}</span>`;
+    }
+  }
+
+  function setReadInput(key) {
+    const el = $('#' + setInputId(key));
+    if (!el) return null;
+    if (el.type === 'checkbox') return el.checked ? '1' : '0';
+    return el.value;
+  }
+
+  async function saveSettings() {
+    const values = {};
+    for (const key of Object.keys(SET_SPECS)) {
+      const v = setReadInput(key);
+      if (v === null) continue;
+      if (SET_SPECS[key].type === 'secret') {
+        if (v.trim()) values[key] = v.trim();   // 空的就不碰，避免把已有密钥洗掉
+        continue;
+      }
+      if (v !== SET_ORIG[key]) values[key] = v;  // 只提交真改过的
+    }
+    if (!Object.keys(values).length) { toast('没有改动。'); return; }
+    try {
+      const r = await api('/api/settings', {method: 'POST',
+        body: JSON.stringify({values})});
+      let msg = `已保存 ${r.saved} 项。`;
+      if (r.restart_required && r.restart_required.length) {
+        msg += `其中 ${r.restart_required.length} 项要重启后生效：`
+             + r.restart_required.join('、');
+      } else {
+        msg += '已立即生效。';
+      }
+      toast(msg);
+      loadSettings();
+    } catch (e) { toast('保存失败：' + e.message); }
+  }
+
+  async function resetSettings() {
+    if (!await uiConfirm({title:'恢复默认参数', message:'把所有参数恢复默认值？（密钥不会被改动）', danger:true})) return;
+    try {
+      const r = await api('/api/settings/reset', {method: 'POST',
+        body: JSON.stringify({})});
+      toast(`已恢复 ${r.reset} 项默认值。`
+        + (r.restart_required && r.restart_required.length
+           ? `其中 ${r.restart_required.length} 项需重启。` : ''));
+      loadSettings();
+    } catch (e) { toast('恢复失败：' + e.message); }
+  }
+  </script>
+  </div>
+  <div class="card restore" id="restoreBar">
+    <b>已隐藏的控件：</b>
+    <span class="row fit" id="restoreList"><span class="muted">无</span></span>
+    <span class="sp" style="flex:1"></span>
+    <span class="muted" id="bpTip" style="font-size:12px"></span>
+    <button class="sm fit" onclick="exportLayout()" title="导出为 JSON 文件，可在其它电脑/浏览器导入">导出布局</button>
+    <button class="sm fit" onclick="importLayout()">导入布局</button>
+    <button class="sm fit" onclick="compactNow()" title="把所有控件向上收紧，消除空隙">一键整理</button>
+    <button class="sm fit" onclick="resetSizes()">重置控件尺寸</button>
+    <button class="sm fit" onclick="resetLayout()">全部恢复默认</button>
+    <input type="file" id="layFile" accept="application/json,.json" style="display:none" />
+  </div>
+</main>
+
+
+<!-- 帮助文档 -->
+<div class="modal help" id="mHelp">
+  <h3>使用帮助 · 功能说明</h3>
+  <div class="body">
+    <div class="help-wrap">
+      <nav class="help-nav">
+        <a href="#h-overview" onclick="return helpJump(this)" class="on">概览</a>
+        <a href="#h-start" onclick="return helpJump(this)">快速开始</a>
+        <a href="#h-accounts" onclick="return helpJump(this)">账号管理</a>
+        <a href="#h-import" onclick="return helpJump(this)">导入</a>
+        <a href="#h-export" onclick="return helpJump(this)">导出</a>
+        <a href="#h-regen" onclick="return helpJump(this)">重生会话</a>
+        <a href="#h-qrlogin" onclick="return helpJump(this)">扫码登录</a>
+        <a href="#h-autologin" onclick="return helpJump(this)">自动登录</a>
+        <a href="#h-kick" onclick="return helpJump(this)">清设备 / OKPay</a>
+        <a href="#h-tasks" onclick="return helpJump(this)">任务与线索</a>
+        <a href="#h-2fa" onclick="return helpJump(this)">二验与重置</a>
+        <a href="#h-tools" onclick="return helpJump(this)">工具箱</a>
+        <a href="#h-zip" onclick="return helpJump(this)">ZIP 工具</a>
+        <a href="#h-system" onclick="return helpJump(this)">热重载与日志</a>
+        <a href="#h-ai" onclick="return helpJump(this)">AI 助手</a>
+        <a href="#h-settings" onclick="return helpJump(this)">参数与布局</a>
+        <a href="#h-bot" onclick="return helpJump(this)">网页与机器人</a>
+        <a href="#h-security" onclick="return helpJump(this)">安全注意</a>
+      </nav>
+      <div class="help-main">
+        <h4 id="h-overview">概览</h4>
+        <p>本工具是<strong>自托管</strong>的 Telegram 多账号管理器：会话加密存本地 SQLite，可通过<strong>网页</strong>或<strong>机器人</strong>操作。适合批量导入、健康检查、清设备、群发、线索采集、号包 ZIP 工具等。</p>
+        <div class="tip">右上角「访问令牌」：若配置了 <code>TAM_WEB_TOKEN</code> 在此填入；本机免令牌模式可留空。顶栏还有<strong>一键体检</strong>、<strong>热重载</strong>、<strong>错误日志</strong>。</div>
+
+        <h4 id="h-start">快速开始</h4>
+        <ul>
+          <li>双击 <code>start.bat</code>（Windows）或运行 <code>./start.sh</code>，选择本机/服务器、网页/机器人/两者。</li>
+          <li>Windows「无法验证发布者」属未签名脚本提示，点<strong>运行</strong>即可；或先运行 <code>unblock.bat</code> / 属性里「解除锁定」。</li>
+          <li>浏览器打开提示地址（本机默认 <code>http://127.0.0.1:8848</code>）。</li>
+          <li>先点「一键体检」，再导入账号。</li>
+        </ul>
+
+        <h4 id="h-accounts">账号管理</h4>
+        <ul>
+          <li><strong>添加账号</strong>：别名、手机号、代理、标签、取码链接等。</li>
+          <li><strong>勾选 + 批量栏</strong>：健康检查、自动登录、发消息、养号、代理体检、OKPay 余额、踢设备、打标签、导出、重生会话、删除等。</li>
+          <li><strong>点开一行</strong>：资料、健康检查、限制检测、设备/会话、登录、清设备、导出、重生、二验状态/重置、退出、删除。</li>
+          <li>状态：active 正常、restricted 受限、banned 封禁、unauthorized 未登录/失效等。</li>
+          <li>批量操作有<strong>真实进度</strong>（完成数/成功/失败/当前号）；并行与超时见参数面板。</li>
+        </ul>
+
+        <h4 id="h-import">导入</h4>
+        <table>
+          <tr><th>入口</th><th>说明</th></tr>
+          <tr><td>批量导入</td><td>每行 <code>手机号|取码链接</code>，可试运行。</td></tr>
+          <tr><td>session 导入</td><td>上传 <code>.session</code> / zip，或服务端路径，或 StringSession 文本。</td></tr>
+          <tr><td>tdata 导入</td><td>上传含 tdata 的 zip 或填路径；<strong>内置解析，无需 opentele</strong>。</td></tr>
+        </table>
+        <div class="tip">导入使用 NDJSON 流式进度，弹窗会显示当前序号/总数，不再是卡住的假进度条。同一 <code>user_id</code> 会合并到已有记录。</div>
+
+        <h4 id="h-export">导出</h4>
+        <ul>
+          <li><strong>StringSession</strong> / <strong>.session</strong> / <strong>号包 zip</strong>（session+json）。</li>
+          <li><strong>tdata</strong>：真 Desktop 目录结构（需服务器安装 <code>opentele</code>）。缺失时弹窗可<strong>一键安装</strong>。</li>
+        </ul>
+        <p>导出只转换库内已有会话，不会新开授权。凭证等同登录权，勿外泄。</p>
+
+        <h4 id="h-regen">重生会话（网页防找回）</h4>
+        <p>与机器人「防找回」同类：新设备指纹重新登录，旧 session 尝试注销，库内换成新会话并重置接管时间。</p>
+        <ul>
+          <li>需要手机号；有 2FA 须填密码（已保存在本工具的二验会自动使用；批量可统一密码）。</li>
+          <li>成功后再导出；tdata 不会在重生时自动生成。</li>
+          <li><strong>限流：</strong>短时间多次重生或多次错 2FA，Telegram 会返回 <code>PhonePasswordFlood</code>（登录次数过多）。需等待数小时～24 小时，期间不要反复点重生。</li>
+        </ul>
+
+        <h4 id="h-qrlogin">扫码登录</h4>
+        <p>账号详情里点「扫码登录」：网页显示二维码，用手机已登录的官方 Telegram 扫描授权，会话加密入库。无需短信验证码；若开启云密码，扫码后需再填一次。</p>
+        <ul>
+          <li>适合无取码链接、或想快速接管已在手机上的号。</li>
+          <li>二维码约 30 秒过期，页面会提示刷新；不要多开重复发起以免限流。</li>
+        </ul>
+
+        <h4 id="h-autologin">自动登录</h4>
+        <p>依赖账号上的<strong>取码链接</strong>。无链接时请手动登录、扫码登录，或直接导入 session/tdata。</p>
+
+        <h4 id="h-kick">清设备 / OKPay</h4>
+        <ul>
+          <li>自动清设备：按「本机接管时间」起算；详情可设是否参与、周期、循环。</li>
+          <li>踢其它设备会校验是否踢干净，失败按重试间隔再试。</li>
+          <li>OKPay 余额：对已登录号查询（需对应业务配置）。</li>
+        </ul>
+
+        <h4 id="h-tasks">任务与线索</h4>
+        <p>群发、采集最近发言人等走任务中心；可看进度、停止。线索库可筛选后再用于群发。</p>
+
+        <h4 id="h-2fa">二验与重置</h4>
+        <ul>
+          <li><strong>改二步验证</strong>：工具箱 / 详情，可选把新密码加密存库。</li>
+          <li><strong>二验状态</strong>：是否开启 2FA、<strong>是否绑定辅助邮箱</strong>、是否处于重置等待期。</li>
+          <li><strong>发起 2FA 重置</strong>：走官方流程，通常约 7 天等待；到期后云密码失效。有辅助邮箱时原持有人仍可能用邮箱恢复——重置前请先查状态。</li>
+          <li><strong>取消 2FA 重置</strong>：取消进行中的等待。</li>
+          <li>支持单号与多选批量。</li>
+        </ul>
+
+        <h4 id="h-tools">工具箱</h4>
+        <p>对<strong>库内已选账号</strong>批量执行：筛活、限制检测、隐私、筛料、改二验、二验状态/重置、清通讯录/会话、防找回清理、<strong>屏蔽/取消屏蔽用户</strong>、搜索公开群、加群、成员列表、读群消息、踢设备等。危险项会确认。</p>
+
+        <h4 id="h-zip">ZIP 工具（不碰库内号）</h4>
+        <ul>
+          <li><strong>拆包 / 合并 / 注册时间分类 / 转 API</strong>：与机器人号包能力对齐。</li>
+          <li><strong>格式互转</strong>：Session→Tdata（需 opentele）或 Tdata→Session（内置解析）。</li>
+          <li><strong>Passkey</strong>：上传 session 号包，初始化 Passkey 注册并下载凭证 zip（创建方向）。</li>
+        </ul>
+        <p>结果请下载后点「用完删除」。号包类移植自 GAFBot（MIT），见 <code>NOTICE.GAFBot</code>。</p>
+
+        <h4 id="h-system">热重载与错误日志</h4>
+        <ul>
+          <li><strong>热重载</strong>：真实重启后端进程（<code>os.execv</code>），不是刷新页面。进行中任务会中断；约 1–3 秒后前端自动探测恢复。</li>
+          <li><strong>错误日志</strong>：记录服务端未捕获异常、HTTP 5xx、前端脚本错误。可列表查看、导出 JSON 上报、清空。</li>
+          <li>文件副本：数据目录下 <code>errors.log</code>（DB 异常时仍可留痕）。</li>
+        </ul>
+
+        <h4 id="h-settings">参数与布局</h4>
+        <ul>
+          <li><code>TAM_BATCH_CONCURRENCY</code>：批量并行（1–32）。</li>
+          <li><code>TAM_REGEN_CONCURRENCY</code>：重生并行（1–8）。</li>
+          <li><code>TAM_UI_OP_TIMEOUT</code>：单号超时秒数，超时跳过避免卡死。</li>
+          <li>编辑布局：拖动画板；可导出/导入布局 JSON。</li>
+        </ul>
+
+        <h4 id="h-bot">网页与机器人</h4>
+        <p><code>TAM_FRONTEND=both</code> 时同一进程开网页+机器人，共享 <code>.env</code> 与数据目录，但<strong>账号库只由网页/API 使用</strong>。机器人默认处理临时号包 ZIP，不自动写入托管表。Passkey/格式互转等号包能力两边均有入口；踢设备、登录、任务中心以网页为准。</p>
+
+        <h4 id="h-ai">AI 助手</h4>
+        <p>右下角 ✦ 或顶栏「AI 助手」打开侧栏。配置上游（OpenAI 兼容 / Claude / Gemini / Azure）与 Key 后，勾选<strong>启用 AI 助手</strong>并点「保存配置」才会生效；关闭启用开关后同样要点保存，否则不生效。权限可用预设（只读/安全/标准/完整）点「套用预设到勾选」，或<strong>逐项勾选工具</strong>。升级后新增工具会按当前预设自动补默认开关。标准预设不含注销账号/退出登录；完整预设才包含。登录与导入导出 session 永不对 AI 开放。</p>
+
+        <h4 id="h-security">安全注意</h4>
+        <ul>
+          <li>主密钥加密会话；备份 <code>.env</code> / 主密钥，丢失无法解密旧会话。</li>
+          <li>导出、重生、转 API 产物等同登录凭证，勿公开传播。</li>
+          <li>服务器请用强令牌并建议 HTTPS；默认本机 127.0.0.1。</li>
+          <li>只读/Agent 令牌不能做导入登录等写操作；热重载在只读模式下禁用。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <button class="primary" onclick="closeAll()">关闭</button>
+  </div>
+</div>
+
+
+<!-- 通用确认 / 输入 / 进度（替代浏览器 prompt/confirm） -->
+<div class="modal" id="mUi">
+  <h3 id="uiTitle" style="padding:16px 16px 0;margin:0">提示</h3>
+  <div class="ui-body">
+    <p class="ui-msg" id="uiMsg"></p>
+    <div id="uiInputWrap" style="display:none">
+      <label class="f"><span id="uiInputLabel">输入</span>
+        <input id="uiInput" autocomplete="off" /></label>
+    </div>
+    <div id="uiProgWrap" class="ui-prog" style="display:none">
+      <div class="bar"><i id="uiProgBar"></i></div>
+      <div class="ui-prog-text" id="uiProgText">—</div>
+    </div>
+  </div>
+  <div class="ui-actions" id="uiActions">
+    <button type="button" id="uiCancel" onclick="uiResolve(false)">取消</button>
+    <button type="button" class="primary" id="uiOk" onclick="uiResolve(true)">确定</button>
+  </div>
+</div>
+
+
+<button type="button" class="ai-fab write" id="aiFab" title="AI 助手（可拖动）">✦</button>
+<div class="ai-panel" id="aiPanel" aria-hidden="true">
+  <div class="ai-resize" id="aiResize" title="拖动调节宽度"></div>
+  <header>
+    <h2>AI 助手</h2>
+    <span class="pill" id="aiStatus">未启用</span>
+    <span class="sp"></span>
+    <button class="sm fit" onclick="aiClearHistory()" title="清空当前对话与本地历史">清空对话</button>
+    <button class="sm fit" onclick="closeAiPanel()">关闭</button>
+  </header>
+  <div class="ai-tabs">
+    <button type="button" class="on" id="aiTabChat" onclick="aiShowTab('chat')">对话</button>
+    <button type="button" id="aiTabCfg" onclick="aiShowTab('cfg')">配置与权限</button>
+  </div>
+  <div class="ai-body">
+    <div class="ai-pane on" id="aiPaneChat">
+      <div class="ai-msgs" id="aiMsgs">
+        <div class="ai-row sys"><div class="ai-bubble sys">在「配置与权限」中选择上游格式、填写接口与 Key，设置权限后启用。支持 Markdown 表格与代码块展示。</div></div>
+      </div>
+      <div class="ai-compose">
+        <textarea id="aiInput" placeholder="输入问题，例如：列出所有 active 账号" rows="2"></textarea>
+        <button class="primary write" id="aiSendBtn" onclick="aiSend()">发送</button>
+      </div>
+    </div>
+    <div class="ai-pane" id="aiPaneCfg">
+      <div class="ai-cfg" id="aiCfgForm">加载中…</div>
+    </div>
+  </div>
+</div>
+
+<div class="backdrop" id="bd" onclick="closeAll()"></div>
+
+<!-- 详情抽屉 -->
+<aside class="drawer" id="drawer">
+  <header><h1 id="dTitle">账号详情</h1><span class="sp"></span><button class="sm fit" onclick="closeAll()">关闭</button></header>
+  <div class="body" id="dBody"></div>
+</aside>
+
+<!-- 添加账号 -->
+<div class="modal" id="mAdd">
+  <h3>添加账号</h3>
+  <div class="body">
+    <label class="f"><span>别名</span><input id="aLabel" placeholder="主号" /></label>
+    <label class="f"><span>手机号</span><input id="aPhone" placeholder="+8613800138000" /></label>
+    <label class="f"><span>取码链接（可选）</span><input id="aCode" placeholder="https://tgapi.example.com/@user/uuid/GetHTML" /></label>
+    <label class="f"><span>代理（可选，强烈建议一号一代理）</span><input id="aProxy" placeholder="socks5://user:pass@host:1080" /></label>
+    <label class="f"><span>标签（逗号分隔）</span><input id="aTags" placeholder="batch1,us" /></label>
+  </div>
+  <div class="foot"><button onclick="closeAll()">取消</button><button class="primary" onclick="addAccount()">添加</button></div>
+</div>
+
+
+<!-- 错误日志 -->
+<div class="modal" id="mErrors">
+  <h3>错误日志</h3>
+  <div class="body">
+    <p class="muted">记录服务端未捕获异常、HTTP 5xx 与前端上报。可导出 JSON 发给维护者。</p>
+    <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+      <button class="sm" onclick="loadErrorLog()">刷新</button>
+      <button class="sm write" onclick="exportErrorLog()">导出报告</button>
+      <button class="sm danger write" onclick="clearErrorLog()">清空</button>
+      <span class="muted" id="errStats">—</span>
+    </div>
+    <pre id="errList" style="max-height:50vh;min-height:180px">加载中…</pre>
+  </div>
+  <div class="foot"><button onclick="closeAll()">关闭</button></div>
+</div>
+
+<!-- 批量导入 -->
+<div class="modal" id="mImport">
+  <h3>批量导入 · 手机号|取码链接</h3>
+  <div class="body">
+    <label class="f"><span>每行一个账号，分隔符支持 | \| ｜ Tab 逗号 分号；第三段作备注</span>
+      <textarea id="iText" oninput="previewImport()" placeholder="+10000000000|https://example.invalid/code/primary/GetHTML"></textarea></label>
+    <div class="row">
+      <label class="f" style="flex:1 1 180px"><span>标签</span><input id="iTags" placeholder="batch1" /></label>
+      <label class="f" style="flex:1 1 220px"><span>统一代理（可选）</span><input id="iProxy" placeholder="socks5://host:1080" /></label>
+    </div>
+    <div class="muted" id="iPrev">解析预览：等待输入</div>
+  </div>
+  <div class="foot"><button onclick="closeAll()">取消</button>
+    <button onclick="doImport(true)">试运行</button>
+    <button class="primary" onclick="doImport(false)">导入</button></div>
+</div>
+
+<!-- tdata 导入 -->
+<div class="modal" id="mTdata">
+  <h3>从 Telegram Desktop tdata 导入</h3>
+  <div class="body">
+    <p class="muted">解析由内置纯 Python 解析器完成，<strong>无需 opentele</strong>，兼容 TDesktop 6.x。上传请把整个 <code>tdata</code> 文件夹打成 zip。</p>
+    <div class="row" style="gap:12px;margin-bottom:8px;flex-wrap:wrap">
+      <label class="row muted" style="gap:6px"><input type="radio" name="tdataMode" value="upload" checked onchange="toggleTdataMode()" style="width:16px;min-height:0" /> 上传 zip</label>
+      <label class="row muted" style="gap:6px"><input type="radio" name="tdataMode" value="path" onchange="toggleTdataMode()" style="width:16px;min-height:0" /> 服务端路径</label>
+    </div>
+    <div id="tdataUploadBox">
+      <label class="f"><span>选择含 tdata 的 zip（可多选）</span>
+        <input type="file" id="tUpload" multiple accept=".zip,application/zip" /></label>
+      <div class="muted" id="tUploadHint">尚未选择文件</div>
+    </div>
+    <div id="tdataPathBox" style="display:none">
+      <label class="f"><span>服务端本地路径（tdata 目录，或号包父目录）</span>
+        <input id="tPath" placeholder="/home/me/tdata 或 /path/to/号包父目录" /></label>
+      <label class="row muted" style="gap:6px"><input type="checkbox" id="tScan" style="width:16px;min-height:0" /> 递归扫描子目录中的多份 tdata</label>
+    </div>
+    <div class="row">
+      <label class="f" style="flex:1 1 180px"><span>别名（单目录时生效）</span><input id="tLabel" /></label>
+      <label class="f" style="flex:1 1 180px"><span>本地密码 passcode（如有）</span><input id="tPass" type="password" /></label>
+    </div>
+    <div class="row">
+      <label class="f" style="flex:1 1 180px"><span>标签</span><input id="tTags" placeholder="tdata" /></label>
+      <label class="f" style="flex:1 1 220px"><span>代理</span><input id="tProxy" placeholder="socks5://host:1080" /></label>
+    </div>
+    <label class="row muted" style="gap:6px"><input type="checkbox" id="tDebug" style="width:16px;min-height:0" checked /> 调试模式：输出逐步骤诊断（导入失败时自动开启）</label>
+  </div>
+  <div class="foot"><button onclick="closeAll()">取消</button><button onclick="doTdataInspect()">先体检不导入</button><button class="primary" onclick="doTdata()">导入</button></div>
+</div>
+
+
+<!-- session 文件 / StringSession 导入 -->
+<div class="modal" id="mSession">
+  <h3>导入 session</h3>
+  <div class="body">
+    <p class="muted">三种方式：本机<strong>上传</strong> .session / zip、填<strong>服务端路径</strong>、或粘贴 <strong>StringSession</strong> 文本。导入后会联网验证并加密入库。</p>
+    <div class="row" style="gap:12px;margin-bottom:10px;flex-wrap:wrap">
+      <label class="row muted" style="gap:6px"><input type="radio" name="sessMode" value="upload" checked onchange="toggleSessMode()" style="width:16px;min-height:0" /> 上传文件</label>
+      <label class="row muted" style="gap:6px"><input type="radio" name="sessMode" value="file" onchange="toggleSessMode()" style="width:16px;min-height:0" /> 服务端路径</label>
+      <label class="row muted" style="gap:6px"><input type="radio" name="sessMode" value="text" onchange="toggleSessMode()" style="width:16px;min-height:0" /> StringSession 文本</label>
+    </div>
+    <div id="sessUploadBox">
+      <label class="f"><span>选择 .session 或含多个 session 的 zip（可多选）</span>
+        <input type="file" id="sfUpload" multiple accept=".session,.zip,application/zip" /></label>
+      <div class="muted" id="sfUploadHint">尚未选择文件</div>
+    </div>
+    <div id="sessFileBox" style="display:none">
+      <label class="f"><span>服务端本地路径（文件或目录）</span><input id="sfPath" placeholder="/home/me/sessions 或 /path/to/acc.session" /></label>
+      <label class="row muted" style="gap:6px"><input type="checkbox" id="sfScan" checked style="width:16px;min-height:0" /> 目录时递归扫描子目录</label>
+    </div>
+    <div id="sessTextBox" style="display:none">
+      <label class="f"><span>每行一个 StringSession；可用 <code>别名|session</code></span>
+        <textarea id="sfText" placeholder="1BVtsOK4Bu...&#10;主号|1AAQ...&#10;# 注释行会被忽略"></textarea></label>
+    </div>
+    <div class="row">
+      <label class="f" style="flex:1 1 160px"><span>统一别名前缀（可选）</span><input id="sfLabel" placeholder="session" /></label>
+      <label class="f" style="flex:1 1 160px"><span>标签</span><input id="sfTags" placeholder="session,batch" /></label>
+      <label class="f" style="flex:1 1 200px"><span>统一代理（可选）</span><input id="sfProxy" placeholder="socks5://host:1080" /></label>
+    </div>
+  </div>
+  <div class="foot"><button onclick="closeAll()">取消</button><button class="primary" onclick="doSessionImport()">导入</button></div>
+</div>
+
+<!-- 登录 -->
+<div class="modal" id="mLogin">
+  <h3>登录账号 <span class="muted" id="lWho"></span></h3>
+  <div class="body">
+    <p class="muted">已向该号码发送验证码。若配置了取码链接，可直接用「自动取码登录」。</p>
+    <label class="f"><span>验证码</span><input id="lCode" inputmode="numeric" placeholder="5 位数字" /></label>
+    <label class="f"><span>两步验证密码（如有）</span><input id="lPass" type="password" /></label>
+  </div>
+  <div class="foot"><button onclick="closeAll()">取消</button>
+    <button onclick="resend()">重发验证码</button>
+    <button class="primary" onclick="verify()">确认登录</button></div>
+</div>
+
+
+<!-- 扫码登录 -->
+<div class="modal" id="mQrLogin">
+  <h3>扫码登录</h3>
+  <div class="body">
+    <p class="muted" id="qrWho" style="margin:0 0 8px"></p>
+    <p class="muted" style="margin:0 0 10px;font-size:12.5px;line-height:1.5">
+      用手机 <strong>Telegram</strong>：设置 → 设备 → <strong>扫描二维码</strong>，或系统相机扫本页二维码。
+      授权后本工具获得新会话（加密入库）。二维码约 30 秒有效，过期会自动刷新。
+    </p>
+    <div style="text-align:center;margin:12px 0">
+      <img id="qrImg" alt="QR" style="width:220px;height:220px;background:#fff;border-radius:8px;border:1px solid var(--border)" />
+    </div>
+    <p class="muted" id="qrStatus" style="text-align:center;font-size:13px">准备中…</p>
+    <label class="f" id="qrPassWrap" style="display:none;margin-top:10px">
+      <span>两步验证密码</span>
+      <input id="qrPass" type="password" placeholder="扫码后若提示需要云密码则填写" />
+    </label>
+  </div>
+  <div class="row" style="justify-content:flex-end;gap:8px;padding:0 16px 14px">
+    <button class="sm fit" type="button" onclick="qrLoginCancel()">取消</button>
+    <button class="sm write" type="button" onclick="qrLoginRefresh()">刷新二维码</button>
+    <button class="primary write" type="button" id="qrSubmitPass" style="display:none" onclick="qrLoginSubmitPass()">提交密码</button>
+  </div>
+</div>
+
+<!-- 发消息 -->
+<div class="modal" id="mSend">
+  <h3>发送消息</h3>
+  <div class="body">
+    <label class="f"><span>接收方（@用户名 / 手机号 / chat id）</span><input id="sPeer" placeholder="@someone" /></label>
+    <label class="f"><span>内容（支持变体语法 {你好|在吗}）</span><textarea id="sText" style="min-height:110px;font-family:inherit;font-size:14px" oninput="spinPreview()"></textarea></label>
+    <div class="row" style="gap:8px;align-items:center">
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sSpin" checked style="width:16px;min-height:0" /> 启用变体</label>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sHealthy" checked style="width:16px;min-height:0" /> 只发健康号</label>
+      <span class="sp" style="flex:1"></span>
+      <span class="muted" id="spinN">变体数 1</span>
+    </div>
+    <pre id="spinPrev" class="muted" style="white-space:pre-wrap;margin:8px 0 0"></pre>
+    <p class="muted">批量发送会自动串行 + 随机间隔。请勿群发骚扰，账号极易被封。</p>
+  </div>
+  <div class="foot"><button onclick="closeAll()">取消</button><button class="primary" onclick="doSend()">发送</button></div>
+</div>
+
+<div class="modal" id="mChats">
+  <h3>采集最近发言人 · 选群</h3>
+  <div class="body">
+    <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <label class="f" style="flex:1;min-width:180px"><span>用哪个账号拉群</span>
+        <select id="cAcc" onchange="loadChats()"></select></label>
+      <label class="f" style="width:130px"><span>类型</span>
+        <select id="cKind" onchange="loadChats()">
+          <option value="group">群组</option>
+          <option value="channel">频道</option>
+          <option value="all">全部</option>
+        </select></label>
+      <button class="fit" onclick="loadChats(true)">重新拉取</button>
+    </div>
+    <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      <input id="cSearch" placeholder="搜群名 / @用户名" oninput="renderChats()" style="flex:1;min-width:160px" />
+      <label style="display:flex;gap:6px;align-items:center" class="muted">
+        <input type="checkbox" id="cActive" checked style="width:16px;min-height:0" onchange="renderChats()" /> 只看 7 天内有新消息的</label>
+      <button class="sm fit" onclick="pickChats(true)">全选</button>
+      <button class="sm fit" onclick="pickChats(false)">清空</button>
+    </div>
+    <div id="chatList" class="chatbox"><span class="muted">正在拉取群组…</span></div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+      <label class="f" style="width:150px"><span>只要最近多少天发言的</span>
+        <input id="cDays" type="number" value="7" min="1" max="90" /></label>
+      <label class="f" style="width:150px"><span>每群最多采多少人</span>
+        <input id="cLimit" type="number" value="300" min="10" max="2000" /></label>
+      <label class="f" style="width:150px"><span>每群最多扫多少条消息</span>
+        <input id="cScan" type="number" value="3000" min="200" max="20000" /></label>
+      <label class="f" style="flex:1;min-width:160px"><span>给这批线索打标签（可空，逗号分隔）</span>
+        <input id="cTags" placeholder="如：高活跃,币圈" /></label>
+    </div>
+    <div class="row" style="gap:12px;align-items:center;margin-top:8px">
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cSkipBot" checked style="width:16px;min-height:0" /> 跳过机器人</label>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cSkipPrem" style="width:16px;min-height:0" /> 跳过 Premium 用户</label>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cCapture" style="width:16px;min-height:0" onchange="$('#cTextLimit').disabled = !this.checked" /> 同时存对话记录</label>
+      <label class="f"><span>每个群最多存多少条</span>
+        <input id="cTextLimit" type="number" value="4000" min="100" max="50000" disabled /></label>
+      <span class="sp" style="flex:1"></span>
+      <span class="muted" id="cCount">已选 0 个群</span>
+    </div>
+    <p class="muted">采集只读历史消息，不会在群里留下任何痕迹；群越大扫得越久，建议先小范围试试。</p>
+  </div>
+  <div class="foot"><button onclick="closeAll()">取消</button>
+    <button class="primary" onclick="startCollect()">开始采集</button></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const DEMO = location.protocol === 'file:' || new URLSearchParams(location.search).has('demo');
+let accounts = [], stats = {total:0, by_status:{}}, sel = new Set(), filter = '', loginId = null, readonly = false;
+let kick = {enabled:false, hours:24, watched:0, due_now:0, next_at:null};
+
+/* ---------- 演示数据 ---------- */
+const MOCK = {
+  tasks: [
+    {id: 12, kind: 'send', title: '群发 128 个目标', status: 'running', status_cn: '运行中',
+     total: 128, ok_count: 74, fail_count: 3, skip_count: 0, done_count: 77, percent: 60.2,
+     created_at: Date.now() / 1000 - 600, live: true, params: {html: true, concurrency: 2}},
+    {id: 11, kind: 'collect_speakers', title: '采集最近 7 天发言人·2 个群',
+     status: 'done', status_cn: '已完成', total: 2, ok_count: 2, fail_count: 0, skip_count: 0,
+     done_count: 2, percent: 100, created_at: Date.now() / 1000 - 5400, live: false, params: {days: 7}},
+    {id: 10, kind: 'send', title: '群发 40 个目标', status: 'stopped', status_cn: '已停止',
+     total: 40, ok_count: 18, fail_count: 2, skip_count: 20, done_count: 40, percent: 100,
+     created_at: Date.now() / 1000 - 86400, live: false, params: {}}],
+  targets: [
+    {id: 1, seq: 0, target: '@alice', account_id: 2, status: 'ok', status_cn: '成功', detail: '账号#2 已发送 message_id=8812'},
+  /* JS_PLACEHOLDER_1 */
+  if (path.startsWith('/api/leads/messages')) return {
+    messages: [
+      {user_id: 60123, username: 'alice_w3', name: 'Alice', source: 'Crypto Talk 中文群',
+       text: '有人看过最新的白皮书吗？', date: Math.floor(Date.now()/1000) - 7200, reply_to: null},
+      {user_id: 60124, username: null, name: 'Bob', source: 'Crypto Talk 中文群',
+       text: '看了，第三节有点意思', date: Math.floor(Date.now()/1000) - 7000, reply_to: null},
+      {user_id: 60123, username: 'alice_w3', name: 'Alice', source: 'Crypto Talk 中文群',
+       text: '同意，周末整理一版笔记', date: Math.floor(Date.now()/1000) - 6800, reply_to: null}],
+    stats: {total: 3, speakers: 2}};
+  if (path.startsWith('/api/leads')) return {count: MOCK.leads.length, items: MOCK.leads};
+  if (path === '/api/autokick') return MOCK.autokick;
+  if (path === '/api/autokick/run') return {enabled:true, hours:24, due:1, retry_after_s:3600, results:[{account_id:2, ok:true, verified:true}]};
+  if (path === '/api/autokick/retry') return {ok:true, retry_after_s:600, retry_after_text:'10 分钟', retry_source:'web'};
+  return {ok:true, demo:true, path, body: opts.body ? JSON.parse(opts.body) : null};
+}
+/* ---------- 任务中心 ---------- */
+const TASK_KIND_CN = {send: '群发消息', collect_speakers: '采集发言人'};
+const TASK_TONE = {running: 'ok', pending: '', stopping: 'warn', stopped: 'warn', done: 'ok', failed: 'err'};
+let taskTimer = null;
+
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function taskCard(t) {
+  const pct = Math.max(0, Math.min(100, t.percent || 0));
+  const tone = TASK_TONE[t.status] || '';
+  const canStop = t.status === 'running' || t.status === 'pending';
+  return `<div class="taskrow">
+    <div class="taskhead">
+      <b>#${t.id} ${esc(t.title)}</b>
+      <span class="pill ${tone}">${esc(t.status_cn || t.status)}</span>
+      <span class="muted">${esc(TASK_KIND_CN[t.kind] || t.kind)} · ${rel(t.created_at)}</span>
+      <span style="flex:1"></span>
+      <button class="sm fit" onclick="taskDetail(${t.id})">明细</button>
+      ${canStop ? `<button class="sm fit warn" onclick="stopTask(${t.id})">停止</button>`
+                : `<button class="sm fit" onclick="delTask(${t.id})">删除</button>`}
+    </div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="muted small">进度 ${t.done_count || 0}/${t.total || 0}（${pct}%）
+      · 成功 ${t.ok_count || 0} · 失败 ${t.fail_count || 0} · 已跳过 ${t.skip_count || 0}</div>
+  </div>`;
+}
+
+async function loadTasks(manualClick) {
+  try {
+    const rows = await api('/api/tasks?limit=10');
+    const el = $('#taskList');
+    if (!el) return;
+    if (!rows.length) {
+      el.innerHTML = '<span class="muted">还没有任务。可以先采集发言人，再对采集结果群发。</span>';
+      $('#taskHint').textContent = '暂无任务';
+    } else {
+      el.innerHTML = rows.map(taskCard).join('');
+      const live = rows.filter(t => t.status === 'running' || t.status === 'pending').length;
+      $('#taskHint').textContent = live ? `${live} 个进行中 · 共 ${rows.length} 个` : `最近 ${rows.length} 个`;
+      clearTimeout(taskTimer);
+      if (live) taskTimer = setTimeout(loadTasks, 3000);
+    }
+    if (manualClick) toast('任务列表已刷新', 'ok');
+  } catch (e) { if (manualClick) toast('任务列表加载失败：' + e.message, 'err'); }
+}
+
+async function taskDetail(id) {
+  try {
+    const t = await api(`/api/tasks/${id}?target_limit=200`);
+    const head = `任务 #${t.id}：${t.title}\n类型：${TASK_KIND_CN[t.kind] || t.kind}`
+      + `\n状态：${t.status_cn || t.status}\n进度：${t.done_count}/${t.total}（${t.percent}%）`
+      + `\n成功 ${t.ok_count} · 失败 ${t.fail_count} · 已跳过 ${t.skip_count}`
+      + `\n创建于 ${fmt(t.created_at)}`
+      + (t.finished_at ? `\n结束于 ${fmt(t.finished_at)}` : '');
+    const bad = (t.targets || []).filter(x => x.status === 'fail');
+    const lines = (t.targets || []).slice(0, 60).map(x =>
+      `${x.status === 'ok' ? '✓' : (x.status === 'fail' ? '✗' : '·')} ${x.target}`
+      + `${x.account_id ? '  由账号 #' + x.account_id : ''}  ${x.status_cn}`
+      + `${x.detail ? '：' + x.detail : ''}`);
+    const tail = (t.targets || []).length > 60 ? `\n…共 ${t.targets.length} 条，仅显示前 60 条` : '';
+    const fail = bad.length ? `\n\n失败原因归类：\n` + Object.entries(
+      bad.reduce((m, x) => { const k = (x.detail || '未知').split(':')[0]; m[k] = (m[k] || 0) + 1; return m; }, {})
+    ).map(([k, v]) => `• ${k}：${v} 个`).join('\n') : '';
+    $('#log').textContent = head + fail + '\n\n逐目标明细：\n' + lines.join('\n') + tail;
+    $('#logRaw').textContent = JSON.stringify(t, null, 2);
+    logPinned = true; $('#logPin').style.display = '';
+  } catch (e) { toast('读取任务失败：' + e.message, 'err'); }
+}
+
+async function stopTask(id) {
+  if (!await uiConfirm({title:'停止任务', message:'确定停止任务 #' + id + '？已发出的不会撤回，剩余目标会标为已跳过。', danger:true, okText:'停止'})) return;
+  await guard(() => api(`/api/tasks/${id}/stop`, {method: 'POST'}), '已请求停止');
+  loadTasks();
+}
+
+async function delTask(id) {
+  if (!await uiConfirm({title:'删除任务', message:'删除任务 #' + id + ' 及其执行记录？', danger:true, okText:'删除'})) return;
+  await guard(() => api(`/api/tasks/${id}`, {method: 'DELETE'}), '任务已删除');
+  loadTasks();
+}
+
+let chatRows = [];
+const chatPicked = new Set();
+
+async function newCollectTask() {
+  const sel = $('#cAcc');
+  const usable = accounts.filter(a => a.status === 'active' || a.status === 'restricted');
+  const pool = usable.length ? usable : accounts;
+  sel.innerHTML = pool.map(a =>
+    `<option value="${a.id}">${a.label}（${fmtPhone(a.phone) || '未知号码'}）</option>`).join('');
+  if (!pool.length) { toast('还没有可用账号，先导入并登录', 'err'); return; }
+  chatPicked.clear();
+  openModal('mChats');
+  loadChats();
+}
+
+async function loadChats(force) {
+  const el = $('#chatList');
+  el.innerHTML = '<span class="muted">正在拉取群组…群多时需等几秒</span>';
+  try {
+    const aid = $('#cAcc').value;
+    const kind = $('#cKind').value;
+    const res = await api(`/api/chats?account_id=${aid}&kind=${kind}&limit=200`);
+    chatRows = res.items || [];
+    if (force) toast(`已拉到 ${chatRows.length} 个会话`, 'ok');
+    renderChats();
+  } catch (e) {
+    el.innerHTML = `<span class="muted">拉取失败：${e.message}</span>`;
+  }
+}
+
+function chatVisible() {
+  const key = ($('#cSearch').value || '').trim().toLowerCase();
+  const onlyActive = $('#cActive').checked;
+  const cut = Date.now() / 1000 - 7 * 86400;
+  return chatRows.filter(c => {
+    if (onlyActive && !(c.last_msg_at && c.last_msg_at >= cut)) return false;
+    if (!key) return true;
+    return (c.title || '').toLowerCase().indexOf(key) >= 0
+      || ('@' + (c.username || '')).toLowerCase().indexOf(key) >= 0;
+  });
+}
+
+function renderChats() {
+  const rows = chatVisible();
+  const el = $('#chatList');
+  if (!rows.length) {
+    el.innerHTML = '<span class="muted">没有匹配的群。可取消“只看 7 天内有新消息的”再看看。</span>';
+  } else {
+    el.innerHTML = rows.map(c => {
+      const tag = c.broadcast ? '频道' : (c.megagroup ? '超级群' : '群');
+      const mem = c.members ? `${c.members} 人` : '人数未知';
+      return `<label class="chatrow">
+        <input type="checkbox" ${chatPicked.has(c.peer) ? 'checked' : ''}
+          onchange="toggleChat('${String(c.peer).replace(/'/g, "\\'")}', this.checked)" />
+        <span class="t"><b>${esc(c.title)}</b>${c.username ? ' <span class="muted">@' + esc(c.username) + '</span>' : ''}</span>
+        <span class="muted">${tag} · ${mem} · ${c.last_msg_at ? rel(c.last_msg_at) : '无消息'}</span>
+      </label>`;
+    }).join('');
+  }
+  $('#cCount').textContent = `已选 ${chatPicked.size} 个群 · 当前显示 ${rows.length}/${chatRows.length}`;
+}
+
+function toggleChat(peer, on) {
+  if (on) chatPicked.add(peer); else chatPicked.delete(peer);
+  $('#cCount').textContent = `已选 ${chatPicked.size} 个群 · 当前显示 ${chatVisible().length}/${chatRows.length}`;
+}
+
+function pickChats(all) {
+  if (all) chatVisible().forEach(c => chatPicked.add(c.peer));
+  else chatPicked.clear();
+  renderChats();
+}
+
+async function startCollect() {
+  if (!chatPicked.size) { toast('至少选一个群', 'err'); return; }
+  const body = {
+    chats: Array.from(chatPicked),
+    account_id: parseInt($('#cAcc').value, 10),
+    days: parseFloat($('#cDays').value) || 7,
+    limit: parseInt($('#cLimit').value, 10) || 300,
+    scan: parseInt($('#cScan').value, 10) || 3000,
+    skip_bots: $('#cSkipBot').checked,
+    skip_premium: $('#cSkipPrem').checked,
+    capture_messages: $('#cCapture').checked,
+    text_limit: parseInt($('#cTextLimit').value, 10) || 4000,
+    tags: ($('#cTags').value || '').split(/[,，]/).map(x => x.trim()).filter(Boolean),
+  };
+  closeAll();
+  await guard(() => api('/api/tasks/collect', {method: 'POST', body: JSON.stringify(body)}),
+    `采集任务已创建（${body.chats.length} 个群）`);
+  loadTasks();
+}
+
+async function newMessageTask() {
+  const src = await uiPrompt({
+    title: '发送目标',
+    message: '• 直接填目标，逗号分隔（@name 或 user_id）\n• 或填 lead:线索来源名',
+    value: 'lead:',
+    label: '目标',
+  });
+  if (src === null || !String(src).trim()) return;
+  const text = await uiPrompt({
+    title: '发送内容',
+    message: '支持 {a|b} 变体、{name} 变量、HTML 超链接。',
+    label: '正文',
+  });
+  if (text === null || !text) return;
+  let html = false;
+  if (/<[a-z]/i.test(text)) {
+    html = await uiConfirm({title: '富文本', message: '检测到 HTML 标签，是否按富文本发送（超链接可点击）？', okText: '富文本发送'});
+  }
+  const body = {text, html, spintax: true, concurrency: 1, delay: 0};
+  if (src.indexOf('lead:') === 0) body.lead_source = src.slice(5).trim();
+  else body.peers = src.split(/[,\uff0c]/).map(x => x.trim()).filter(Boolean);
+  await guard(() => api('/api/tasks/message', {method: 'POST', body: JSON.stringify(body)}),
+    '群发任务已创建');
+  loadTasks();
+}
+
+/* ---------- 线索库 ---------- */
+let leadRows = [];
+
+async function loadLeads() {
+  try {
+    const [srcs, data] = await Promise.all([api('/api/leads/sources'), api('/api/leads?limit=500')]);
+    leadRows = data.items || [];
+    const el = $('#leadList');
+    if (!el) return;
+    $('#leadHint').textContent = leadRows.length
+      ? `共 ${data.count} 人 · ${srcs.length} 个来源` : '';
+    if (!leadRows.length) {
+      el.innerHTML = '<span class="muted">还没有采集到线索。先在任务中心点“采集发言人”。</span>';
+      return;
+    }
+    const bySrc = srcs.map(x => `<div class="leadsrc">
+      <b>${esc(x.source)}</b><span class="muted">${x.item_count} 人·有用户名 ${x.with_username || 0}</span>
+      <span style="flex:1"></span>
+      <button class="sm fit" onclick="viewLeadMsgs(null, '${esc(x.source).replace(/'/g, "\\'")}')">看对话</button>
+      <button class="sm fit write" onclick="sendToSource('${esc(x.source).replace(/'/g, "\\'")}')">向它群发</button>
+      </div>`).join('');
+    const list = leadRows.slice(0, 50).map(x =>
+      `<div class="leadrow"><span>${x.username ? '@' + esc(x.username) : esc(x.name || x.user_id)}</span>
+       <span class="muted">${esc(x.source)} · 发言 ${x.msg_count || 0} 条 · ${rel(x.last_msg_at)}</span>
+       <span style="flex:1"></span>
+       <button class="sm fit" onclick="viewLeadMsgs(${Number(x.user_id)}, '${esc(x.source).replace(/'/g, "\\'")}')">对话</button></div>`).join('');
+    el.innerHTML = bySrc + '<div class="hr"></div>' + list
+      + (leadRows.length > 50 ? `<div class="muted small">…共 ${leadRows.length} 条，导出 CSV 看全部</div>` : '');
+  } catch (e) { /* 未登录时静默 */ }
+}
+
+async function sendToSource(source) {
+  const text = await uiPrompt({
+    title: '向线索群发',
+    message: '向「' + source + '」的全部线索发送（支持 {a|b} 与 {name} 变量）。',
+    label: '正文',
+  });
+  if (text === null || !text) return;
+  await guard(() => api('/api/tasks/message', {method: 'POST', body: JSON.stringify(
+    {lead_source: source, text, spintax: true})}), '群发任务已创建');
+  loadTasks();
+}
+
+function toggleSessMode() {
+  const mode = (document.querySelector('input[name="sessMode"]:checked') || {}).value || 'upload';
+  $('#sessUploadBox').style.display = mode === 'upload' ? '' : 'none';
+  $('#sessFileBox').style.display = mode === 'file' ? '' : 'none';
+  $('#sessTextBox').style.display = mode === 'text' ? '' : 'none';
+}
+
+document.addEventListener('change', function (e) {
+  if (!e.target || e.target.id !== 'sfUpload') return;
+  const files = e.target.files || [];
+  const el = $('#sfUploadHint');
+  if (!el) return;
+  if (!files.length) { el.textContent = '尚未选择文件'; return; }
+  const names = Array.from(files).map(f => f.name + ' (' + Math.round(f.size / 1024) + 'KB)');
+  el.textContent = '已选 ' + files.length + ' 个：' + names.slice(0, 5).join('、')
+    + (names.length > 5 ? '…' : '');
+});
+
+async function _sessionUploadOne(file, label, proxy, tags) {
+  const q = new URLSearchParams();
+  if (label) q.set('label', label);
+  if (proxy) q.set('proxy', proxy);
+  if (tags && tags.length) q.set('tags', tags.join(','));
+  const path = '/api/accounts/import-session-upload' + (q.toString() ? '?' + q.toString() : '');
+  const headers = {'X-Filename': file.name};
+  if (!DEMO) {
+    const tok = ($('#token') && $('#token').value) || localStorage.getItem('tam_token') || '';
+    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+  }
+  if (DEMO) {
+    return {ok: true, total: 1, succeeded: 1, failed: 0,
+            items: [{ok: true, label: file.name, user_id: 900001}], filename: file.name};
+  }
+  const res = await fetch(path, {method: 'POST', body: file, headers});
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch (_) { data = {detail: text}; }
+  if (!res.ok) throw new Error(data.detail || data.error || res.statusText || '上传失败');
+  return data;
+}
+
+async function doSessionImport() {
+  const mode = (document.querySelector('input[name="sessMode"]:checked') || {}).value || 'upload';
+  const tags = $('#sfTags').value ? $('#sfTags').value.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const proxy = $('#sfProxy').value || null;
+  const label = $('#sfLabel').value || null;
+  try {
+    let r;
+    if (mode === 'upload') {
+      const input = $('#sfUpload');
+      const files = input && input.files ? Array.from(input.files) : [];
+      if (!files.length) { toast('请选择要上传的 .session 或 zip', 'err'); return; }
+      const merged = {ok: true, total: 0, succeeded: 0, failed: 0, items: []};
+      for (let fi = 0; fi < files.length; fi++) {
+        const f = files[fi];
+        const q = new URLSearchParams();
+        if (label) q.set('label', label);
+        if (proxy) q.set('proxy', proxy);
+        if (tags && tags.length) q.set('tags', tags.join(','));
+        const path = '/api/accounts/import-session-upload' + (q.toString() ? '?' + q.toString() : '');
+        const headers = {'X-Filename': f.name};
+        const title = files.length > 1
+          ? ('session 导入 文件 ' + (fi + 1) + '/' + files.length + ' · ' + f.name)
+          : ('session 导入 · ' + f.name);
+        const one = await fetchImportStream(path, {method: 'POST', body: f, headers: headers}, title);
+        merged.total += one.total || (one.items || []).length || 0;
+        merged.succeeded += one.succeeded || 0;
+        merged.failed += one.failed || 0;
+        merged.items = merged.items.concat(one.items || []);
+      }
+      r = merged;
+    } else if (mode === 'file') {
+      const path = ($('#sfPath').value || '').trim();
+      if (!path) { toast('请填写服务端本地路径', 'err'); return; }
+      r = await fetchImportStream('/api/accounts/import-sessions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path, scan: $('#sfScan').checked, label, proxy, tags}),
+      }, 'session 路径导入');
+    } else {
+      const text = ($('#sfText').value || '').trim();
+      if (!text) { toast('请粘贴 StringSession 文本', 'err'); return; }
+      r = await fetchImportStream('/api/accounts/import-session-strings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text, label, proxy, tags}),
+      }, 'StringSession 导入');
+    }
+    const items = r.items || [];
+    const okN = r.succeeded != null ? r.succeeded : items.filter(x => x.ok).length;
+    const badN = r.failed != null ? r.failed : items.length - okN;
+    const lines = items.map(it => it.ok
+      ? ('  ✓ ' + (it.label || it.file || '') + ' user_id=' + (it.user_id || (it.info && it.info.user_id) || '?'))
+      : ('  ✗ ' + (it.label || it.file || '') + ' ' + (it.error || '失败'))).join('\n');
+    out('session 导入完成：成功 ' + okN + '，失败 ' + badN + '\n' + (lines || JSON.stringify(r, null, 2)), true);
+    if (okN) { toast('导入成功 ' + okN + ' 个' + (badN ? '，失败 ' + badN : ''), badN ? '' : 'ok'); closeAll(); }
+    else toast('导入失败 0 成功，详情见日志区', 'err');
+    refresh();
+  } catch (e) { toast('失败：' + e.message, 'err'); out({error: String(e)}, true); }
+}
+
+async function viewLeadMsgs(userId, source) {
+  try {
+    const q = new URLSearchParams();
+    if (userId != null && userId !== '') q.set('user_id', String(userId));
+    if (source) q.set('source', source);
+    q.set('limit', '200');
+    const r = await api('/api/leads/messages?' + q.toString());
+    const msgs = r.messages || [];
+    const st = r.stats || {};
+    const titleBits = [];
+    if (userId) titleBits.push('用户 ' + userId);
+    if (source) titleBits.push(source);
+    const title = titleBits.join(' · ') || '对话记录';
+    closeAll();
+    $('#dTitle').textContent = '对话 · ' + title;
+    if (!msgs.length) {
+      $('#dBody').innerHTML = '<div class="chat-empty">没有对话记录。<br/>采集发言人时请勾选「同时存对话记录」。</div>';
+      $('#drawer').classList.add('on'); $('#bd').classList.add('on');
+      toast('没有对话记录', 'err');
+      return;
+    }
+    const stats = '<div class="chat-stats">本页 ' + msgs.length + ' 条'
+      + (st.total != null ? ' · 库内共 ' + st.total + ' 条 / ' + (st.speakers || '?') + ' 人' : '')
+      + '</div>';
+    const rows = msgs.map(function (m) {
+      const t = m.date ? new Date(m.date * 1000).toLocaleString() : '';
+      const who = m.username ? ('@' + m.username) : (m.name || ('#' + (m.user_id || '')));
+      const reply = m.reply_to ? (' · 回复 #' + m.reply_to) : '';
+      return '<div class="msg-row">'
+        + '<div class="msg-meta">' + esc(who) + ' · ' + esc(t) + esc(reply) + '</div>'
+        + '<div class="msg-bubble">' + esc(m.text || '（无文本）') + '</div>'
+        + '</div>';
+    }).join('');
+    $('#dBody').innerHTML = stats + '<div class="chat">' + rows + '</div>';
+    $('#drawer').classList.add('on'); $('#bd').classList.add('on');
+    toast('已加载 ' + msgs.length + ' 条对话', 'ok');
+  } catch (e) { toast('加载对话失败：' + e.message, 'err'); }
+}
+
+
+function exportLeads() {
+  if (!leadRows.length) { toast('现在没有线索可导出', 'err'); return; }
+  const head = ['user_id', 'username', 'name', 'source', 'msg_count', 'last_msg_at'];
+  const csv = [head.join(',')].concat(leadRows.map(r => head.map(k => {
+    const v = k === 'last_msg_at' ? fmt(r[k]) : (r[k] === null || r[k] === undefined ? '' : r[k]);
+    return '"' + String(v).replace(/"/g, '""') + '"';
+  }).join(','))).join('\n');
+  const blob = new Blob(['\ufeff' + csv], {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'tam-leads.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast(`已导出 ${leadRows.length} 条线索`, 'ok');
+}
+
+async function runDoctor() {
+  toast('正在体检并自动修复，可能需要一分钟…');
+  try {
+    const r = await api('/api/doctor/fix', {method: 'POST'});
+    const lines = (r.checks || []).map(c => {
+      const mark = c.status === 'ok' ? '✓' : (c.status === 'warn' ? '!' : '✗');
+      const fixed = c.fixed ? '（已自动修复）' : '';
+      const hint = c.hint && c.status !== 'ok' ? `\n     → ${c.hint}` : '';
+      return `${mark} ${c.name}：${c.detail || ''}${fixed}${hint}`;
+    });
+    out(lines.join('\n'), true);
+    if (r.ok) toast(r.fixed && r.fixed.length ? `体检通过，已自动修复 ${r.fixed.length} 项` : '体检全部通过', 'ok');
+    else toast(`${r.failed.length} 项未通过，详情见下方日志区`, 'err');
+    refresh();
+  } catch (e) { toast('体检失败：' + e.message, 'err'); out({error: String(e)}, true); }
+}
+
+async function hotReload() {
+  if (!await uiConfirm({
+    title: '热重载（真实重启）',
+    message: '将真实重启后端进程（os.execv），约 1–3 秒服务不可用。\\n进行中的导入/任务会中断。\\n确认继续？',
+    okText: '重启',
+    danger: true,
+  })) return;
+  try {
+/* JS_PLACEHOLDER_2 */
+</script>
+</body>
+</html>

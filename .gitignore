@@ -34,3 +34,4 @@ unpack/
 .idea/
 .vscode/
 
+# tam/web/index.html 是构建产物,但必须提交以便用户开箱即用

@@ -313,7 +313,8 @@ class AccountManager:
         self.limiter = RateLimiter(settings.global_rate)
         self._pending: dict[int, PendingLogin] = {}
         self._pending_qr: dict[int, PendingQrLogin] = {}
-        self._locks: dict[int, asyncio.Lock] = {}
+        self._locks: dict[int, asyncio.Lock] = {}  # 账号级并发控制
+        self._db_lock = asyncio.Lock()  # 数据库写入并发控制
 
     # ---------- 内部工具 ----------
     def _lock(self, account_id: int) -> asyncio.Lock:

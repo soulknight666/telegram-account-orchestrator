@@ -1,6 +1,7 @@
 """SQLite 存储层：账号、代理、操作审计日志。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -133,6 +134,7 @@ class Database:
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
+        self._lock = asyncio.Lock()  # 并发写保护
 
     def _migrate(self) -> None:
         """旧库升级：缺列则补列。"""

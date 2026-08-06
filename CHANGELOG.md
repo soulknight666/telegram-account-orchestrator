@@ -2,6 +2,28 @@
 
 All notable changes follow semantic versioning.
 
+## [Unreleased]
+
+### Added - Sprint 3 (2026-08-06)
+
+- **Dependency locking**: `requirements.lock` pins all dependencies to exact versions
+- **Unified exception system**: New `tam/exceptions.py` with standard exception classes (TAMError, AccountNotFoundError, SessionError, NetworkError, AuthError, ValidationError, ConfigError, ToolError) and `format_error()` helper
+- **Concurrency control**: Added `asyncio.Lock` to Database and AccountManager for safe concurrent operations
+
+### Added - Sprint 2 (2026-08-06)
+
+- **Configurable LLM timeout**: `TAM_LLM_TIMEOUT` environment variable (10-600s, default 120s) controls all AI panel LLM calls
+- **Frontend source split**: Separated `tam/web/index.html` (282KB) into `index.src.html` (65KB), `styles.css` (26KB), `app.js` (198KB) with `build.py` script for single-file deployment
+- **Integration tests**: New `tests/test_integration.py` with 3 end-to-end tests covering account import, read-only tool execution, and AI tool call chains
+
+### Fixed - Sprint 1 (2026-08-06)
+
+- **Exception handling**: Converted 88 bare `except:` clauses to `except Exception:` with explanatory comments across GAF module (18 files)
+- **Security**: Replaced `eval()` with `ast.literal_eval()` in `qingli.py` line 157
+- **AI safety**: Added red warning text below AI confirmation toggles emphasizing irreversible operation risks
+- **MASTER_KEY validation**: Added length check (≥32 chars) in `config.py` and `setup.py` to prevent encryption failures
+- **Test compatibility**: Updated `test_ai_panel.py` mocks to accept `timeout` parameter
+
 ## [0.2.2] - 2026-08-02
 
 ### Fixed

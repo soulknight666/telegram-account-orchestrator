@@ -14,8 +14,10 @@ def build():
 
     # 替换占位符
     result = src_html.replace("  /* CSS_PLACEHOLDER */\n", css)
-    result = result.replace("  /* JS_PLACEHOLDER_1 */\n", "")  # 第一段 JS 已合并到 JS_PLACEHOLDER_2
-    result = result.replace("/* JS_PLACEHOLDER_2 */\n", js)
+    result = result.replace("/* JS_PLACEHOLDER */\n", js)
+
+    if "PLACEHOLDER" in result:
+        raise RuntimeError("web source contains an unresolved build placeholder")
 
     out = base / "index.html"
     out.write_text(result, encoding="utf-8")

@@ -43,6 +43,22 @@ def test_parse() -> None:
     print("行解析 OK")
 
 
+def test_parse_markdown_table() -> None:
+    text = """
+| 序号 | 手机号 | 取码链接 |
+| ---: | :--- | :--- |
+| 2 | `+1 202 555 0116` | `https://example.invalid/client-login/login?linkToken=test-2` |
+| 3 | **+1 (202) 555-0181** | <https://example.invalid/code/3> |
+"""
+    items, bad = parse_text(text)
+
+    assert bad == []
+    assert [item.phone for item in items] == ["+12025550116", "+12025550181"]
+    assert [item.label for item in items] == [None, None]
+    assert items[0].code_url.endswith("linkToken=test-2")
+    assert items[1].code_url == "https://example.invalid/code/3"
+
+
 def test_batch() -> None:
     text = "\n".join([
         "# 批次 2026-07",

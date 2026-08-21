@@ -913,6 +913,10 @@ tbody tr.sel{background:var(--blue-soft)}
     <label class="f"><span>别名</span><input id="aLabel" placeholder="主号" /></label>
     <label class="f"><span>手机号</span><input id="aPhone" placeholder="+8613800138000" /></label>
     <label class="f"><span>取码链接（可选）</span><input id="aCode" placeholder="https://tgapi.example.com/@user/uuid/GetHTML" /></label>
+    <div class="row" style="gap:8px;margin:-6px 0 12px;align-items:center">
+      <button type="button" class="sm fit" id="aCodeTest" onclick="testCodeSource('aCode','aProxy','aCodeStatus')">测试取码链接</button>
+      <span class="muted" id="aCodeStatus">只读测试，不发送 Telegram 验证码</span>
+    </div>
     <label class="f"><span>代理（可选，强烈建议一号一代理）</span><input id="aProxy" placeholder="socks5://user:pass@host:1080" /></label>
     <label class="f"><span>标签（逗号分隔）</span><input id="aTags" placeholder="batch1,us" /></label>
   </div>
@@ -940,13 +944,17 @@ tbody tr.sel{background:var(--blue-soft)}
 <div class="modal" id="mImport">
   <h3>批量导入 · 手机号|取码链接</h3>
   <div class="body">
-    <label class="f"><span>每行一个账号，分隔符支持 | \| ｜ Tab 逗号 分号；第三段作备注</span>
+    <label class="f"><span>支持 手机号|取码链接、Markdown 表格、序号列及反引号；第三段备注作别名</span>
       <textarea id="iText" oninput="previewImport()" placeholder="+10000000000|https://example.invalid/code/primary/GetHTML"></textarea></label>
     <div class="row">
       <label class="f" style="flex:1 1 180px"><span>标签</span><input id="iTags" placeholder="batch1" /></label>
       <label class="f" style="flex:1 1 220px"><span>统一代理（可选）</span><input id="iProxy" placeholder="socks5://host:1080" /></label>
     </div>
     <div class="muted" id="iPrev">解析预览：等待输入</div>
+    <div class="row" style="gap:8px;margin-top:10px;align-items:center">
+      <button type="button" class="sm fit" id="iCodeTest" onclick="testFirstImportedCodeSource()">测试第一条取码链接</button>
+      <span class="muted" id="iCodeStatus">只读测试，不发送 Telegram 验证码</span>
+    </div>
   </div>
   <div class="foot"><button onclick="closeAll()">取消</button>
     <button onclick="doImport(true)">试运行</button>
@@ -1022,12 +1030,13 @@ tbody tr.sel{background:var(--blue-soft)}
 <div class="modal" id="mLogin">
   <h3>登录账号 <span class="muted" id="lWho"></span></h3>
   <div class="body">
-    <p class="muted">已向该号码发送验证码。若配置了取码链接，可直接用「自动取码登录」。</p>
+    <p class="muted" id="lHint">尚未发送验证码。请选择手动发码或自动接码登录。</p>
     <label class="f"><span>验证码</span><input id="lCode" inputmode="numeric" placeholder="5 位数字" /></label>
     <label class="f"><span>两步验证密码（如有）</span><input id="lPass" type="password" /></label>
   </div>
   <div class="foot"><button onclick="closeAll()">取消</button>
-    <button onclick="resend()">重发验证码</button>
+    <button id="lSendBtn" onclick="resend()">发送验证码</button>
+    <button id="lAutoBtn" class="write" onclick="autoLoginFromModal()">自动接码登录</button>
     <button class="primary" onclick="verify()">确认登录</button></div>
 </div>
 
@@ -1144,6 +1153,118 @@ const MOCK = {
      created_at: Date.now() / 1000 - 86400, live: false, params: {}}],
   targets: [
     {id: 1, seq: 0, target: '@alice', account_id: 2, status: 'ok', status_cn: '成功', detail: '账号#2 已发送 message_id=8812'},
+    {id: 2, seq: 1, target: '@bob', account_id: 3, status: 'fail', status_cn: '失败', detail: 'FloodWaitError: A wait of 300 seconds is required'},
+    {id: 3, seq: 2, target: '778812345', account_id: 2, status: 'pending', status_cn: '待处理', detail: ''}],
+  chats: [
+    {id: -1001, title: 'Crypto Talk 中文群', username: 'cryptotalkcn', peer: '@cryptotalkcn',
+     members: 12840, is_group: true, is_channel: false, megagroup: true, broadcast: false,
+     unread: 12, last_msg_at: Date.now() / 1000 - 900},
+    {id: -1002, title: 'Web3 Builders', username: null, peer: '-1002',
+     members: 862, is_group: true, is_channel: false, megagroup: true, broadcast: false,
+     unread: 0, last_msg_at: Date.now() / 1000 - 26000},
+    {id: -1003, title: 'NFT 二级市场交流', username: 'nftsecond', peer: '@nftsecond',
+     members: 3410, is_group: true, is_channel: false, megagroup: true, broadcast: false,
+     unread: 3, last_msg_at: Date.now() / 1000 - 4 * 86400},
+    {id: -1004, title: '老群（已冷）', username: null, peer: '-1004',
+     members: 220, is_group: true, is_channel: false, megagroup: false, broadcast: false,
+     unread: 0, last_msg_at: Date.now() / 1000 - 40 * 86400}],
+  leadSources: [
+    {source: 'Crypto Talk 中文群', item_count: 316, with_username: 251, last_seen: Date.now() / 1000 - 3600},
+    {source: 'Web3 Builders', item_count: 88, with_username: 62, last_seen: Date.now() / 1000 - 90000}],
+  leads: [
+    {user_id: 60123, username: 'alice_w3', name: 'Alice', source: 'Crypto Talk 中文群', msg_count: 12, last_msg_at: Date.now() / 1000 - 4000, tags: ['高活跃']},
+    {user_id: 60124, username: null, name: 'Bob', source: 'Crypto Talk 中文群', msg_count: 3, last_msg_at: Date.now() / 1000 - 40000, tags: []},
+    {user_id: 60125, username: 'carol', name: 'Carol', source: 'Web3 Builders', msg_count: 7, last_msg_at: Date.now() / 1000 - 100000, tags: []}],
+
+  accounts: [
+    {id:1,label:'主号',phone:'+8613800138000',username:'gladys',status:'active',proxy:'socks5://127.0.0.1:1080',code_url:null,tags:['main'],authorized:true,premium:1,auto_kick:1,has_2fa:1,has_twofa_saved:true,twofa:'Demo2fa!',login_at:Math.floor(Date.now()/1000)-72000,adopted_at:Math.floor(Date.now()/1000)-72000},
+    {id:2,label:'US-A',phone:'+10000000000',username:'coldstart_a',status:'active',proxy:'socks5://us1:1080',code_url:'https://example.invalid/code/account-a/GetHTML',tags:['batch1','us'],authorized:true,auto_kick:1,has_2fa:1,has_twofa_saved:false,login_at:Math.floor(Date.now()/1000)-90000,last_kick_at:null},
+    {id:3,label:'US-B',phone:'+10000000001',username:null,status:'new',proxy:'socks5://us2:1080',code_url:'https://example.invalid/code/account-b/GetHTML',tags:['batch1','us'],authorized:false,has_2fa:0},
+    {id:4,label:'US-C',phone:'+10000000002',username:null,status:'unauthorized',proxy:null,code_url:'https://example.invalid/code/account-c/GetHTML',tags:['batch1'],authorized:false,has_2fa:null},
+    {id:5,label:'tdata-01',phone:'+447700900123',username:'desk_one',status:'restricted',proxy:'socks5://uk1:1080',code_url:null,tags:['tdata'],authorized:true,has_2fa:1,has_twofa_saved:true,twofa:'uk-pass'},
+    {id:6,label:'tdata-02',phone:'+447700900124',username:null,status:'banned',proxy:'socks5://uk1:1080',code_url:null,tags:['tdata'],authorized:false,has_2fa:0}
+  ],
+  stats: {total:6, by_status:{active:2, new:1, unauthorized:1, restricted:1, banned:1}},
+  autokick: {enabled:true, hours:24, watched:2, due_now:1, scan_interval_s:600,
+            retry_after_s:3600, retry_after_text:'1 小时', retry_source:'env', retry_min_s:10,
+             server_now: Math.floor(Date.now()/1000), max_overdue_s: 0,
+             next_at: Math.floor(Date.now()/1000) + 5400},
+  logs: [
+    {id:42,account_id:2,action:'auto_login',ok:1,detail:'user_id=708812345',created_at:1753432740},
+    {id:41,account_id:2,action:'fetch_code',ok:1,detail:'code_len=5',created_at:1753432712},
+    {id:40,account_id:5,action:'health_check',ok:1,detail:'restricted: spam block until 2026-07-28',created_at:1753431980},
+    {id:39,account_id:6,action:'health_check',ok:0,detail:'UserDeactivatedBanError',created_at:1753431975},
+    {id:38,account_id:3,action:'import_accounts',ok:1,detail:'added=3 updated=0',created_at:1753431020}
+  ]
+};
+
+/* ---------- 基础设施 ---------- */
+const tokenKey = 'tam_token';
+$('#token').value = localStorage.getItem(tokenKey) || '';
+async function applyToken() {
+  const v = $('#token').value.trim();
+  $('#token').value = v;
+  localStorage.setItem(tokenKey, v);
+  $('#mode').textContent = '连接中…'; $('#mode').className = 'pill off';
+  await probeMode();
+  if ($('#mode').className.indexOf('off') < 0) { toast('令牌已生效，已连接', 'ok'); await refresh(); }
+  else toast('令牌无效或服务未启动', 'err');
+}
+$('#token').addEventListener('change', applyToken);
+$('#token').addEventListener('keydown', e => { if (e.key === 'Enter') applyToken(); });
+
+function toast(msg, kind='') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+let busy = 0;
+function progress(on) {
+  busy = Math.max(0, busy + (on ? 1 : -1));
+  $('#prog').style.width = busy ? '70%' : '0';
+}
+async function api(path, opts = {}) {
+  if (DEMO) return demoApi(path, opts);
+  progress(true);
+  try {
+    const res = await fetch(path, {...opts, headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + ($('#token').value || ''),
+      ...(opts.headers || {})}});
+    if (!res.ok) {
+      const raw = await res.text();
+      let msg = raw;
+      try { const j = JSON.parse(raw); msg = j.detail || j.message || raw; } catch {}
+      if (res.status === 401) msg = '令牌无效（401）：请核对 .env 里的 TAM_WEB_TOKEN';
+      throw new Error(String(msg).slice(0, 400));
+    }
+    return res.json();
+  } finally { progress(false); }
+}
+async function demoApi(path, opts) {
+  await new Promise(r => setTimeout(r, 220));
+  if (path.startsWith('/api/stats')) return MOCK.stats;
+  if (path.startsWith('/api/accounts?') || path === '/api/accounts') return MOCK.accounts.map(a => {
+    const o = Object.assign({}, a); delete o.twofa; return o; // 列表不带明文，与真实 API 一致
+  });
+  if (/^\/api\/accounts\/\d+\/twofa$/.test(path.split('?')[0]) && (!opts.method || opts.method === 'GET')) {
+    const id = +path.split('/')[3];
+    const a = MOCK.accounts.find(x => x.id === id) || {};
+    return {ok:true, id, has_2fa: a.has_2fa, saved: !!a.has_twofa_saved, twofa: a.twofa || ''};
+  }
+  if (/^\/api\/accounts\/\d+\/twofa$/.test(path.split('?')[0]) && (opts.method || '').toUpperCase() === 'POST') {
+    return {ok:true, saved:true, has_2fa:1};
+  }
+  if (path.startsWith('/api/logs')) return MOCK.logs;
+  if (path.startsWith('/api/tools')) return {readonly:false, dry_run:false, tools:[]};
+  if (path === '/api/tasks' || path.startsWith('/api/tasks?')) return MOCK.tasks;
+  if (/^\/api\/tasks\/\d+$/.test(path.split('?')[0]))
+    return Object.assign({}, MOCK.tasks[0], {targets: MOCK.targets});
+  if (path.startsWith('/api/chats')) return {count: MOCK.chats.length, items: MOCK.chats};
+  if (path === '/api/leads/sources') return MOCK.leadSources;
+
   if (path.startsWith('/api/leads/messages')) return {
     messages: [
       {user_id: 60123, username: 'alice_w3', name: 'Alice', source: 'Crypto Talk 中文群',
@@ -1587,118 +1708,6 @@ async function hotReload() {
     danger: true,
   })) return;
   try {
-    {id: 2, seq: 1, target: '@bob', account_id: 3, status: 'fail', status_cn: '失败', detail: 'FloodWaitError: A wait of 300 seconds is required'},
-    {id: 3, seq: 2, target: '778812345', account_id: 2, status: 'pending', status_cn: '待处理', detail: ''}],
-  chats: [
-    {id: -1001, title: 'Crypto Talk 中文群', username: 'cryptotalkcn', peer: '@cryptotalkcn',
-     members: 12840, is_group: true, is_channel: false, megagroup: true, broadcast: false,
-     unread: 12, last_msg_at: Date.now() / 1000 - 900},
-    {id: -1002, title: 'Web3 Builders', username: null, peer: '-1002',
-     members: 862, is_group: true, is_channel: false, megagroup: true, broadcast: false,
-     unread: 0, last_msg_at: Date.now() / 1000 - 26000},
-    {id: -1003, title: 'NFT 二级市场交流', username: 'nftsecond', peer: '@nftsecond',
-     members: 3410, is_group: true, is_channel: false, megagroup: true, broadcast: false,
-     unread: 3, last_msg_at: Date.now() / 1000 - 4 * 86400},
-    {id: -1004, title: '老群（已冷）', username: null, peer: '-1004',
-     members: 220, is_group: true, is_channel: false, megagroup: false, broadcast: false,
-     unread: 0, last_msg_at: Date.now() / 1000 - 40 * 86400}],
-  leadSources: [
-    {source: 'Crypto Talk 中文群', item_count: 316, with_username: 251, last_seen: Date.now() / 1000 - 3600},
-    {source: 'Web3 Builders', item_count: 88, with_username: 62, last_seen: Date.now() / 1000 - 90000}],
-  leads: [
-    {user_id: 60123, username: 'alice_w3', name: 'Alice', source: 'Crypto Talk 中文群', msg_count: 12, last_msg_at: Date.now() / 1000 - 4000, tags: ['高活跃']},
-    {user_id: 60124, username: null, name: 'Bob', source: 'Crypto Talk 中文群', msg_count: 3, last_msg_at: Date.now() / 1000 - 40000, tags: []},
-    {user_id: 60125, username: 'carol', name: 'Carol', source: 'Web3 Builders', msg_count: 7, last_msg_at: Date.now() / 1000 - 100000, tags: []}],
-
-  accounts: [
-    {id:1,label:'主号',phone:'+8613800138000',username:'gladys',status:'active',proxy:'socks5://127.0.0.1:1080',code_url:null,tags:['main'],authorized:true,premium:1,auto_kick:1,has_2fa:1,has_twofa_saved:true,twofa:'Demo2fa!',login_at:Math.floor(Date.now()/1000)-72000,adopted_at:Math.floor(Date.now()/1000)-72000},
-    {id:2,label:'US-A',phone:'+10000000000',username:'coldstart_a',status:'active',proxy:'socks5://us1:1080',code_url:'https://example.invalid/code/account-a/GetHTML',tags:['batch1','us'],authorized:true,auto_kick:1,has_2fa:1,has_twofa_saved:false,login_at:Math.floor(Date.now()/1000)-90000,last_kick_at:null},
-    {id:3,label:'US-B',phone:'+10000000001',username:null,status:'new',proxy:'socks5://us2:1080',code_url:'https://example.invalid/code/account-b/GetHTML',tags:['batch1','us'],authorized:false,has_2fa:0},
-    {id:4,label:'US-C',phone:'+10000000002',username:null,status:'unauthorized',proxy:null,code_url:'https://example.invalid/code/account-c/GetHTML',tags:['batch1'],authorized:false,has_2fa:null},
-    {id:5,label:'tdata-01',phone:'+447700900123',username:'desk_one',status:'restricted',proxy:'socks5://uk1:1080',code_url:null,tags:['tdata'],authorized:true,has_2fa:1,has_twofa_saved:true,twofa:'uk-pass'},
-    {id:6,label:'tdata-02',phone:'+447700900124',username:null,status:'banned',proxy:'socks5://uk1:1080',code_url:null,tags:['tdata'],authorized:false,has_2fa:0}
-  ],
-  stats: {total:6, by_status:{active:2, new:1, unauthorized:1, restricted:1, banned:1}},
-  autokick: {enabled:true, hours:24, watched:2, due_now:1, scan_interval_s:600,
-            retry_after_s:3600, retry_after_text:'1 小时', retry_source:'env', retry_min_s:10,
-             server_now: Math.floor(Date.now()/1000), max_overdue_s: 0,
-             next_at: Math.floor(Date.now()/1000) + 5400},
-  logs: [
-    {id:42,account_id:2,action:'auto_login',ok:1,detail:'user_id=708812345',created_at:1753432740},
-    {id:41,account_id:2,action:'fetch_code',ok:1,detail:'code_len=5',created_at:1753432712},
-    {id:40,account_id:5,action:'health_check',ok:1,detail:'restricted: spam block until 2026-07-28',created_at:1753431980},
-    {id:39,account_id:6,action:'health_check',ok:0,detail:'UserDeactivatedBanError',created_at:1753431975},
-    {id:38,account_id:3,action:'import_accounts',ok:1,detail:'added=3 updated=0',created_at:1753431020}
-  ]
-};
-
-/* ---------- 基础设施 ---------- */
-const tokenKey = 'tam_token';
-$('#token').value = localStorage.getItem(tokenKey) || '';
-async function applyToken() {
-  const v = $('#token').value.trim();
-  $('#token').value = v;
-  localStorage.setItem(tokenKey, v);
-  $('#mode').textContent = '连接中…'; $('#mode').className = 'pill off';
-  await probeMode();
-  if ($('#mode').className.indexOf('off') < 0) { toast('令牌已生效，已连接', 'ok'); await refresh(); }
-  else toast('令牌无效或服务未启动', 'err');
-}
-$('#token').addEventListener('change', applyToken);
-$('#token').addEventListener('keydown', e => { if (e.key === 'Enter') applyToken(); });
-
-function toast(msg, kind='') {
-  const el = document.createElement('div');
-  el.className = 'toast ' + kind;
-  el.textContent = msg;
-  $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), 4200);
-}
-let busy = 0;
-function progress(on) {
-  busy = Math.max(0, busy + (on ? 1 : -1));
-  $('#prog').style.width = busy ? '70%' : '0';
-}
-async function api(path, opts = {}) {
-  if (DEMO) return demoApi(path, opts);
-  progress(true);
-  try {
-    const res = await fetch(path, {...opts, headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + ($('#token').value || ''),
-      ...(opts.headers || {})}});
-    if (!res.ok) {
-      const raw = await res.text();
-      let msg = raw;
-      try { const j = JSON.parse(raw); msg = j.detail || j.message || raw; } catch {}
-      if (res.status === 401) msg = '令牌无效（401）：请核对 .env 里的 TAM_WEB_TOKEN';
-      throw new Error(String(msg).slice(0, 400));
-    }
-    return res.json();
-  } finally { progress(false); }
-}
-async function demoApi(path, opts) {
-  await new Promise(r => setTimeout(r, 220));
-  if (path.startsWith('/api/stats')) return MOCK.stats;
-  if (path.startsWith('/api/accounts?') || path === '/api/accounts') return MOCK.accounts.map(a => {
-    const o = Object.assign({}, a); delete o.twofa; return o; // 列表不带明文，与真实 API 一致
-  });
-  if (/^\/api\/accounts\/\d+\/twofa$/.test(path.split('?')[0]) && (!opts.method || opts.method === 'GET')) {
-    const id = +path.split('/')[3];
-    const a = MOCK.accounts.find(x => x.id === id) || {};
-    return {ok:true, id, has_2fa: a.has_2fa, saved: !!a.has_twofa_saved, twofa: a.twofa || ''};
-  }
-  if (/^\/api\/accounts\/\d+\/twofa$/.test(path.split('?')[0]) && (opts.method || '').toUpperCase() === 'POST') {
-    return {ok:true, saved:true, has_2fa:1};
-  }
-  if (path.startsWith('/api/logs')) return MOCK.logs;
-  if (path.startsWith('/api/tools')) return {readonly:false, dry_run:false, tools:[]};
-  if (path === '/api/tasks' || path.startsWith('/api/tasks?')) return MOCK.tasks;
-  if (/^\/api\/tasks\/\d+$/.test(path.split('?')[0]))
-    return Object.assign({}, MOCK.tasks[0], {targets: MOCK.targets});
-  if (path.startsWith('/api/chats')) return {count: MOCK.chats.length, items: MOCK.chats};
-  if (path === '/api/leads/sources') return MOCK.leadSources;
-
 
     uiProgress({title: '热重载', current: 0, total: 1, text: '正在请求重启…'});
     const r = await api('/api/system/restart', {
@@ -3455,7 +3464,6 @@ function render() {
       <td onclick="event.stopPropagation()">
         ${a.authorized ? '' : `<button class="sm write" onclick="startLogin(${a.id})">登录</button>`}
         <button class="sm write fit" onclick="startQrLogin(${a.id})" title="手机 Telegram 扫码授权">扫码登录</button>
-        ${a.code_url && !a.authorized ? `<button class="sm write" onclick="autoLogin(${a.id})">自动取码</button>` : ''}
         <button class="sm" onclick="check(${a.id})">检查</button>
       </td>
     </tr>`).join('') : emptyRowHtml();
@@ -3520,6 +3528,10 @@ function openDrawer(id) {
     <label class="f"><span>手机号</span><input id="ePhone" value="${esc(a.phone || '')}" /></label>
     <label class="f"><span>代理</span><input id="eProxy" value="${esc(a.proxy || '')}" placeholder="socks5://host:1080" /></label>
     <label class="f"><span>取码链接</span><input id="eCode" value="${esc(a.code_url || '')}" /></label>
+    <div class="row" style="gap:8px;margin:-6px 0 12px;align-items:center">
+      <button type="button" class="sm fit" id="eCodeTest" onclick="testCodeSource('eCode','eProxy','eCodeStatus')">测试取码链接</button>
+      <span class="muted" id="eCodeStatus">只读测试，不发送 Telegram 验证码</span>
+    </div>
     <label class="f"><span>标签（逗号分隔）</span><input id="eTags" value="${esc((a.tags || []).join(','))}" /></label>
     <div class="f">
       <span class="lbl">自动清设备</span>
@@ -3557,7 +3569,7 @@ function openDrawer(id) {
       <button class="danger write fit" onclick="regenSession(${a.id})" title="新设备指纹重新登录，旧 session 作废（防找回）">重生会话</button>
     </div>
     <div class="row">
-      ${a.code_url ? `<button class="write fit" onclick="autoLogin(${a.id})">自动取码登录</button>` : ''}
+      ${a.authorized ? '' : `<button class="write fit" onclick="startLogin(${a.id})">登录</button>`}
       <button class="write fit" onclick="startQrLogin(${a.id})" title="手机 Telegram 扫码授权，无需短信">扫码登录</button>
       <button class="write fit" onclick="terminate(${a.id})">清理其他设备</button>
       <button class="write fit" onclick="logout(${a.id})">退出登录</button>
@@ -3617,6 +3629,39 @@ const saveAccount = id => guard(async () => {
     tags: $('#eTags').value ? $('#eTags').value.split(',').map(s => s.trim()) : []})});
   closeAll(); return r;
 }, '已保存');
+
+function codeProbeSummary(r) {
+  const type = {json: 'JSON', html: 'HTML', text: '纯文本'}[r.response_type] || r.response_type;
+  return `${r.provider_label} · ${type} · ${r.code_present ? '当前检测到验证码' : '当前暂无验证码'}`
+    + (r.requires_prepare ? ' · 登录时会先启动监控' : '');
+}
+
+async function testCodeSource(urlId, proxyId, statusId, explicitUrl) {
+  const urlEl = $('#' + urlId);
+  const proxyEl = proxyId ? $('#' + proxyId) : null;
+  const status = $('#' + statusId);
+  const url = (explicitUrl || (urlEl && urlEl.value) || '').trim();
+  if (!url) {
+    if (status) status.textContent = '请先填写取码链接';
+    toast('请先填写取码链接', 'err');
+    return null;
+  }
+  if (status) status.textContent = '正在只读探测…';
+  try {
+    const r = await api('/api/code-sources/probe', {
+      method: 'POST',
+      body: JSON.stringify({url, proxy: (proxyEl && proxyEl.value) || null, timeout: 15}),
+    });
+    const summary = codeProbeSummary(r);
+    if (status) status.textContent = summary;
+    toast('取码链接可访问：' + summary, 'ok');
+    return r;
+  } catch (e) {
+    if (status) status.textContent = '探测失败：' + e.message;
+    toast('取码链接探测失败：' + e.message, 'err');
+    return null;
+  }
+}
 
 
 const check = id => guard(() => api(`/api/accounts/${id}/check`, {method:'POST'}), '检查完成');
@@ -4049,8 +4094,27 @@ async function qrLoginCancel() {
 }
 
 
-const autoLogin = id => guard(() => api(`/api/accounts/${id}/login/auto`, {method:'POST',
-  body: JSON.stringify({timeout:120})}), '自动取码登录完成');
+async function autoLogin(id, closeOnSuccess) {
+  const password = loginId === id && $('#lPass') ? ($('#lPass').value || null) : null;
+  const r = await guard(() => api(`/api/accounts/${id}/login/auto`, {method:'POST',
+    body: JSON.stringify({timeout:120, password})}), '自动接码登录完成');
+  if (r && closeOnSuccess) closeAll();
+  return r;
+}
+
+async function autoLoginFromModal() {
+  if (!loginId) return;
+  const btn = $('#lAutoBtn');
+  const hint = $('#lHint');
+  if (btn) btn.disabled = true;
+  if (hint) hint.textContent = '正在启动取码监控、发送验证码并等待新码…';
+  try {
+    const r = await autoLogin(loginId, true);
+    if (!r && hint) hint.textContent = '自动接码失败，请查看错误日志后重试。';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 /* 登录（内联表单，替代 prompt） */
 async function startLogin(id) {
@@ -4058,10 +4122,30 @@ async function startLogin(id) {
   const a = accounts.find(x => x.id === id);
   $('#lWho').textContent = a ? `${a.label} ${a.phone || ''}` : '';
   $('#lCode').value = $('#lPass').value = '';
+  $('#lHint').textContent = a && a.code_url
+    ? '尚未发送验证码。可手动发码后填写验证码，或点击自动接码登录。'
+    : '尚未发送验证码。点击“发送验证码”后手动填写收到的验证码。';
+  $('#lSendBtn').textContent = '发送验证码';
+  $('#lAutoBtn').style.display = a && a.code_url ? '' : 'none';
   openModal('mLogin');
-  guard(() => api(`/api/accounts/${id}/login/code`, {method:'POST'}), '验证码已发送');
 }
-const resend = () => guard(() => api(`/api/accounts/${loginId}/login/code`, {method:'POST'}), '已重发');
+async function resend() {
+  if (!loginId) return;
+  const btn = $('#lSendBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await guard(
+      () => api(`/api/accounts/${loginId}/login/code`, {method:'POST'}),
+      '验证码已发送',
+    );
+    if (r) {
+      $('#lHint').textContent = '验证码已发送，请填写收到的验证码后确认登录。';
+      btn.textContent = '重新发送验证码';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 const verify = () => guard(async () => {
   const body = {code: $('#lCode').value, password: $('#lPass').value || null};
   const r = await api(`/api/accounts/${loginId}/login/verify`, {method:'POST', body: JSON.stringify(body)});
@@ -4085,7 +4169,7 @@ async function bulk(kind) {
   if (kind === 'auto') {
     if (!await uiConfirm({title:'批量自动登录', message:'将对 ' + ids.length + ' 个账号串行执行「发码 → 自动取码 → 登录」。', danger:true, okText:'开始'})) return;
     const r = await runSerial(ids, async (id) => {
-      return await api('/api/accounts/' + id + '/auto-login', {
+      return await api('/api/accounts/' + id + '/login/auto', {
         method: 'POST', body: JSON.stringify({timeout: 120})});
     }, '批量自动登录');
     out(r, true);
@@ -4280,16 +4364,45 @@ async function bulkDelete() {
 }
 
 /* 批量导入 */
+function cleanImportPart(part) {
+  let value = part.trim();
+  if (value.length >= 2 && value.startsWith('`') && value.endsWith('`')) {
+    value = value.replace(/^`+|`+$/g, '').trim();
+  }
+  if (value.length >= 4 && ((value.startsWith('**') && value.endsWith('**')) ||
+      (value.startsWith('__') && value.endsWith('__')))) {
+    value = value.slice(2, -2).trim();
+  }
+  if (value.length >= 2 && value.startsWith('<') && value.endsWith('>')) {
+    value = value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function isMarkdownTableMeta(parts) {
+  if (parts.length && parts.every(p => /^:?-{3,}:?$/.test(p.replace(/\s/g, '')))) return true;
+  const names = new Set(parts.map(p => p.replace(/[\s_\/-]/g, '').toLowerCase()));
+  const hasPhone = ['phone', 'phonenumber', 'mobile', '手机号', '号码'].some(x => names.has(x));
+  const hasUrl = ['url', 'link', 'codeurl', '取码链接', '链接'].some(x => names.has(x));
+  return hasPhone && hasUrl;
+}
+
 function parseLines(text) {
   const ok = [], bad = [];
   text.split('\n').forEach((raw, i) => {
     const line = raw.trim().replace(/^\ufeff/, '');
     if (!line || line.startsWith('#')) return;
-    const parts = line.split(/\s*(?:\\\||\||｜|\t|,|;)\s*/).filter(Boolean);
+    const parts = line.split(/\s*(?:\\\||\||｜|\t|,|;)\s*/)
+      .map(cleanImportPart).filter(Boolean);
+    if (isMarkdownTableMeta(parts)) return;
     let phone = null, url = null, label = null;
     parts.forEach(p => {
       if (/^https?:\/\//i.test(p)) url = url || p;
-      else if (/^\+?\d[\d\s\-()]{5,}$/.test(p)) phone = phone || ('+' + p.replace(/[^\d]/g, ''));
+      else if (/^\+?\d[\d\s\-()]{5,}$/.test(p)) {
+        const digitCount = p.replace(/\D/g, '').length;
+        if (digitCount >= 7 && digitCount <= 15) phone = phone || ('+' + p.replace(/\D/g, ''));
+      }
+      else if (/^(?:#\s*)?\d+[.)]?$/i.test(p)) return;
       else label = label || p;
     });
     phone ? ok.push({phone, url, label}) : bad.push({line: i + 1, raw: line});
@@ -4304,6 +4417,18 @@ function previewImport() {
       (bad.length ? `，<span style="color:#a13f36">${bad.length} 行无法识别：第 ${bad.slice(0,5).map(b => b.line).join('、')} 行</span>` : '')
     : '解析预览：等待输入';
 }
+
+async function testFirstImportedCodeSource() {
+  const {ok} = parseLines($('#iText').value);
+  const first = ok.find(item => item.url);
+  if (!first) {
+    $('#iCodeStatus').textContent = '没有识别到取码链接';
+    toast('没有识别到取码链接', 'err');
+    return;
+  }
+  return testCodeSource('', 'iProxy', 'iCodeStatus', first.url);
+}
+
 const doImport = dry => guard(async () => {
   const r = await withWaitProgress(
     dry ? '试运行导入清单' : '批量导入账号',
@@ -6091,10 +6216,6 @@ document.addEventListener('keydown', function (e) {
     closeAiPanel();
   }
 });
-
-
-</script>
-</body>
 </script>
 </body>
 </html>

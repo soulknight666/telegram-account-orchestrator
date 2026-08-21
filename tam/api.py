@@ -1049,6 +1049,12 @@ class BatchAutoLoginIn(BatchIn):
     timeout: float = 120.0
 
 
+class CodeSourceProbeIn(BaseModel):
+    url: str
+    proxy: str | None = None
+    timeout: float = 15.0
+
+
 @app.post("/api/accounts/import", dependencies=[Depends(auth)])
 async def import_accounts_endpoint(body: ImportIn) -> dict[str, Any]:
     """批量导入 手机号|取码链接 清单（dry_run=true 为试运行预览）。"""
@@ -1056,6 +1062,27 @@ async def import_accounts_endpoint(body: ImportIn) -> dict[str, Any]:
 
     return import_accounts(db, body.text, tags=body.tags,
                            proxy=body.proxy, dry_run=body.dry_run)
+
+
+@app.get("/api/code-sources/providers", dependencies=[Depends(auth)])
+async def code_source_providers() -> list[dict[str, object]]:
+    from .codefetch import list_providers
+
+    return list_providers()
+
+
+@app.post("/api/code-sources/probe", dependencies=[Depends(auth)])
+async def code_source_probe(body: CodeSourceProbeIn) -> dict[str, object]:
+    """只读探测取码链接，不发 Telegram 验证码，也不返回验证码内容。"""
+    from .codefetch import probe_code_source
+
+    timeout = max(2.0, min(float(body.timeout), 30.0))
+    try:
+        return await probe_code_source(body.url.strip(), timeout, body.proxy)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"取码链接探测失败：{type(exc).__name__}: {exc}") from exc
 
 
 

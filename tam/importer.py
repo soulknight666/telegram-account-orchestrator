@@ -7,6 +7,7 @@ r"""批量导入卡商/发卡平台给的初始账号行。
 - 分隔符可为 | 、\| 、｜、制表符、逗号、分号
 - 允许 手机号|取码链接|备注 第三段（当作 label）
 - 允许两段顺序颠倒（链接在前）
+- 允许 Markdown 表格、序号列、反引号/粗体/尖括号包裹
 - 忽略空行与 # 开头的注释行；手机号自动补 +
 """
 from __future__ import annotations
@@ -19,6 +20,8 @@ from .db import Account, Database
 
 SEP = re.compile(r"\s*(?:\\\||\||\uff5c|\t|,|;)\s*")
 PHONE = re.compile(r"^\+?\d[\d\s\-()]{5,}$")
+TABLE_RULE = re.compile(r"^:?-{3,}:?$")
+ORDINAL = re.compile(r"^(?:#\s*)?\d+[.)]?$", re.I)
 
 
 @dataclass
@@ -31,18 +34,46 @@ class ParsedAccount:
         return {"phone": self.phone, "code_url": self.code_url, "label": self.label}
 
 
+def _clean_part(part: str) -> str:
+    part = part.strip()
+    if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
+        part = part.strip("`").strip()
+    if len(part) >= 4 and (
+        (part.startswith("**") and part.endswith("**"))
+        or (part.startswith("__") and part.endswith("__"))
+    ):
+        part = part[2:-2].strip()
+    if len(part) >= 2 and part.startswith("<") and part.endswith(">"):
+        part = part[1:-1].strip()
+    return part
+
+
+def _is_table_meta(parts: list[str]) -> bool:
+    if parts and all(TABLE_RULE.fullmatch(part.replace(" ", "")) for part in parts):
+        return True
+    names = {re.sub(r"[\s_/-]", "", part).lower() for part in parts}
+    phone_names = {"phone", "phonenumber", "mobile", "手机号", "号码"}
+    url_names = {"url", "link", "codeurl", "取码链接", "链接"}
+    return bool(names & phone_names) and bool(names & url_names)
+
+
 def parse_line(line: str) -> ParsedAccount | None:
     line = line.strip().lstrip("\ufeff")
     if not line or line.startswith("#"):
         return None
-    parts = [p for p in SEP.split(line) if p]
+    parts = [_clean_part(p) for p in SEP.split(line)]
+    parts = [p for p in parts if p]
+    if _is_table_meta(parts):
+        return None
     phone = code_url = label = None
     extras: list[str] = []
     for part in parts:
         if part.lower().startswith(("http://", "https://")):
             code_url = code_url or part
-        elif PHONE.match(part):
+        elif PHONE.fullmatch(part) and 7 <= len(re.sub(r"\D", "", part)) <= 15:
             phone = phone or re.sub(r"[\s\-()]", "", part)
+        elif ORDINAL.fullmatch(part):
+            continue
         else:
             extras.append(part)
     if not phone:

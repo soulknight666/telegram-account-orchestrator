@@ -1,3 +1,22 @@
+const $ = s => document.querySelector(s);
+const DEMO = location.protocol === 'file:' || new URLSearchParams(location.search).has('demo');
+let accounts = [], stats = {total:0, by_status:{}}, sel = new Set(), filter = '', loginId = null, readonly = false;
+let kick = {enabled:false, hours:24, watched:0, due_now:0, next_at:null};
+
+/* ---------- 演示数据 ---------- */
+const MOCK = {
+  tasks: [
+    {id: 12, kind: 'send', title: '群发 128 个目标', status: 'running', status_cn: '运行中',
+     total: 128, ok_count: 74, fail_count: 3, skip_count: 0, done_count: 77, percent: 60.2,
+     created_at: Date.now() / 1000 - 600, live: true, params: {html: true, concurrency: 2}},
+    {id: 11, kind: 'collect_speakers', title: '采集最近 7 天发言人·2 个群',
+     status: 'done', status_cn: '已完成', total: 2, ok_count: 2, fail_count: 0, skip_count: 0,
+     done_count: 2, percent: 100, created_at: Date.now() / 1000 - 5400, live: false, params: {days: 7}},
+    {id: 10, kind: 'send', title: '群发 40 个目标', status: 'stopped', status_cn: '已停止',
+     total: 40, ok_count: 18, fail_count: 2, skip_count: 20, done_count: 40, percent: 100,
+     created_at: Date.now() / 1000 - 86400, live: false, params: {}}],
+  targets: [
+    {id: 1, seq: 0, target: '@alice', account_id: 2, status: 'ok', status_cn: '成功', detail: '账号#2 已发送 message_id=8812'},
     {id: 2, seq: 1, target: '@bob', account_id: 3, status: 'fail', status_cn: '失败', detail: 'FloodWaitError: A wait of 300 seconds is required'},
     {id: 3, seq: 2, target: '778812345', account_id: 2, status: 'pending', status_cn: '待处理', detail: ''}],
   chats: [
@@ -110,6 +129,449 @@ async function demoApi(path, opts) {
   if (path.startsWith('/api/chats')) return {count: MOCK.chats.length, items: MOCK.chats};
   if (path === '/api/leads/sources') return MOCK.leadSources;
 
+  if (path.startsWith('/api/leads/messages')) return {
+    messages: [
+      {user_id: 60123, username: 'alice_w3', name: 'Alice', source: 'Crypto Talk 中文群',
+       text: '有人看过最新的白皮书吗？', date: Math.floor(Date.now()/1000) - 7200, reply_to: null},
+      {user_id: 60124, username: null, name: 'Bob', source: 'Crypto Talk 中文群',
+       text: '看了，第三节有点意思', date: Math.floor(Date.now()/1000) - 7000, reply_to: null},
+      {user_id: 60123, username: 'alice_w3', name: 'Alice', source: 'Crypto Talk 中文群',
+       text: '同意，周末整理一版笔记', date: Math.floor(Date.now()/1000) - 6800, reply_to: null}],
+    stats: {total: 3, speakers: 2}};
+  if (path.startsWith('/api/leads')) return {count: MOCK.leads.length, items: MOCK.leads};
+  if (path === '/api/autokick') return MOCK.autokick;
+  if (path === '/api/autokick/run') return {enabled:true, hours:24, due:1, retry_after_s:3600, results:[{account_id:2, ok:true, verified:true}]};
+  if (path === '/api/autokick/retry') return {ok:true, retry_after_s:600, retry_after_text:'10 分钟', retry_source:'web'};
+  return {ok:true, demo:true, path, body: opts.body ? JSON.parse(opts.body) : null};
+}
+/* ---------- 任务中心 ---------- */
+const TASK_KIND_CN = {send: '群发消息', collect_speakers: '采集发言人'};
+const TASK_TONE = {running: 'ok', pending: '', stopping: 'warn', stopped: 'warn', done: 'ok', failed: 'err'};
+let taskTimer = null;
+
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function taskCard(t) {
+  const pct = Math.max(0, Math.min(100, t.percent || 0));
+  const tone = TASK_TONE[t.status] || '';
+  const canStop = t.status === 'running' || t.status === 'pending';
+  return `<div class="taskrow">
+    <div class="taskhead">
+      <b>#${t.id} ${esc(t.title)}</b>
+      <span class="pill ${tone}">${esc(t.status_cn || t.status)}</span>
+      <span class="muted">${esc(TASK_KIND_CN[t.kind] || t.kind)} · ${rel(t.created_at)}</span>
+      <span style="flex:1"></span>
+      <button class="sm fit" onclick="taskDetail(${t.id})">明细</button>
+      ${canStop ? `<button class="sm fit warn" onclick="stopTask(${t.id})">停止</button>`
+                : `<button class="sm fit" onclick="delTask(${t.id})">删除</button>`}
+    </div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="muted small">进度 ${t.done_count || 0}/${t.total || 0}（${pct}%）
+      · 成功 ${t.ok_count || 0} · 失败 ${t.fail_count || 0} · 已跳过 ${t.skip_count || 0}</div>
+  </div>`;
+}
+
+async function loadTasks(manualClick) {
+  try {
+    const rows = await api('/api/tasks?limit=10');
+    const el = $('#taskList');
+    if (!el) return;
+    if (!rows.length) {
+      el.innerHTML = '<span class="muted">还没有任务。可以先采集发言人，再对采集结果群发。</span>';
+      $('#taskHint').textContent = '暂无任务';
+    } else {
+      el.innerHTML = rows.map(taskCard).join('');
+      const live = rows.filter(t => t.status === 'running' || t.status === 'pending').length;
+      $('#taskHint').textContent = live ? `${live} 个进行中 · 共 ${rows.length} 个` : `最近 ${rows.length} 个`;
+      clearTimeout(taskTimer);
+      if (live) taskTimer = setTimeout(loadTasks, 3000);
+    }
+    if (manualClick) toast('任务列表已刷新', 'ok');
+  } catch (e) { if (manualClick) toast('任务列表加载失败：' + e.message, 'err'); }
+}
+
+async function taskDetail(id) {
+  try {
+    const t = await api(`/api/tasks/${id}?target_limit=200`);
+    const head = `任务 #${t.id}：${t.title}\n类型：${TASK_KIND_CN[t.kind] || t.kind}`
+      + `\n状态：${t.status_cn || t.status}\n进度：${t.done_count}/${t.total}（${t.percent}%）`
+      + `\n成功 ${t.ok_count} · 失败 ${t.fail_count} · 已跳过 ${t.skip_count}`
+      + `\n创建于 ${fmt(t.created_at)}`
+      + (t.finished_at ? `\n结束于 ${fmt(t.finished_at)}` : '');
+    const bad = (t.targets || []).filter(x => x.status === 'fail');
+    const lines = (t.targets || []).slice(0, 60).map(x =>
+      `${x.status === 'ok' ? '✓' : (x.status === 'fail' ? '✗' : '·')} ${x.target}`
+      + `${x.account_id ? '  由账号 #' + x.account_id : ''}  ${x.status_cn}`
+      + `${x.detail ? '：' + x.detail : ''}`);
+    const tail = (t.targets || []).length > 60 ? `\n…共 ${t.targets.length} 条，仅显示前 60 条` : '';
+    const fail = bad.length ? `\n\n失败原因归类：\n` + Object.entries(
+      bad.reduce((m, x) => { const k = (x.detail || '未知').split(':')[0]; m[k] = (m[k] || 0) + 1; return m; }, {})
+    ).map(([k, v]) => `• ${k}：${v} 个`).join('\n') : '';
+    $('#log').textContent = head + fail + '\n\n逐目标明细：\n' + lines.join('\n') + tail;
+    $('#logRaw').textContent = JSON.stringify(t, null, 2);
+    logPinned = true; $('#logPin').style.display = '';
+  } catch (e) { toast('读取任务失败：' + e.message, 'err'); }
+}
+
+async function stopTask(id) {
+  if (!await uiConfirm({title:'停止任务', message:'确定停止任务 #' + id + '？已发出的不会撤回，剩余目标会标为已跳过。', danger:true, okText:'停止'})) return;
+  await guard(() => api(`/api/tasks/${id}/stop`, {method: 'POST'}), '已请求停止');
+  loadTasks();
+}
+
+async function delTask(id) {
+  if (!await uiConfirm({title:'删除任务', message:'删除任务 #' + id + ' 及其执行记录？', danger:true, okText:'删除'})) return;
+  await guard(() => api(`/api/tasks/${id}`, {method: 'DELETE'}), '任务已删除');
+  loadTasks();
+}
+
+let chatRows = [];
+const chatPicked = new Set();
+
+async function newCollectTask() {
+  const sel = $('#cAcc');
+  const usable = accounts.filter(a => a.status === 'active' || a.status === 'restricted');
+  const pool = usable.length ? usable : accounts;
+  sel.innerHTML = pool.map(a =>
+    `<option value="${a.id}">${a.label}（${fmtPhone(a.phone) || '未知号码'}）</option>`).join('');
+  if (!pool.length) { toast('还没有可用账号，先导入并登录', 'err'); return; }
+  chatPicked.clear();
+  openModal('mChats');
+  loadChats();
+}
+
+async function loadChats(force) {
+  const el = $('#chatList');
+  el.innerHTML = '<span class="muted">正在拉取群组…群多时需等几秒</span>';
+  try {
+    const aid = $('#cAcc').value;
+    const kind = $('#cKind').value;
+    const res = await api(`/api/chats?account_id=${aid}&kind=${kind}&limit=200`);
+    chatRows = res.items || [];
+    if (force) toast(`已拉到 ${chatRows.length} 个会话`, 'ok');
+    renderChats();
+  } catch (e) {
+    el.innerHTML = `<span class="muted">拉取失败：${e.message}</span>`;
+  }
+}
+
+function chatVisible() {
+  const key = ($('#cSearch').value || '').trim().toLowerCase();
+  const onlyActive = $('#cActive').checked;
+  const cut = Date.now() / 1000 - 7 * 86400;
+  return chatRows.filter(c => {
+    if (onlyActive && !(c.last_msg_at && c.last_msg_at >= cut)) return false;
+    if (!key) return true;
+    return (c.title || '').toLowerCase().indexOf(key) >= 0
+      || ('@' + (c.username || '')).toLowerCase().indexOf(key) >= 0;
+  });
+}
+
+function renderChats() {
+  const rows = chatVisible();
+  const el = $('#chatList');
+  if (!rows.length) {
+    el.innerHTML = '<span class="muted">没有匹配的群。可取消“只看 7 天内有新消息的”再看看。</span>';
+  } else {
+    el.innerHTML = rows.map(c => {
+      const tag = c.broadcast ? '频道' : (c.megagroup ? '超级群' : '群');
+      const mem = c.members ? `${c.members} 人` : '人数未知';
+      return `<label class="chatrow">
+        <input type="checkbox" ${chatPicked.has(c.peer) ? 'checked' : ''}
+          onchange="toggleChat('${String(c.peer).replace(/'/g, "\\'")}', this.checked)" />
+        <span class="t"><b>${esc(c.title)}</b>${c.username ? ' <span class="muted">@' + esc(c.username) + '</span>' : ''}</span>
+        <span class="muted">${tag} · ${mem} · ${c.last_msg_at ? rel(c.last_msg_at) : '无消息'}</span>
+      </label>`;
+    }).join('');
+  }
+  $('#cCount').textContent = `已选 ${chatPicked.size} 个群 · 当前显示 ${rows.length}/${chatRows.length}`;
+}
+
+function toggleChat(peer, on) {
+  if (on) chatPicked.add(peer); else chatPicked.delete(peer);
+  $('#cCount').textContent = `已选 ${chatPicked.size} 个群 · 当前显示 ${chatVisible().length}/${chatRows.length}`;
+}
+
+function pickChats(all) {
+  if (all) chatVisible().forEach(c => chatPicked.add(c.peer));
+  else chatPicked.clear();
+  renderChats();
+}
+
+async function startCollect() {
+  if (!chatPicked.size) { toast('至少选一个群', 'err'); return; }
+  const body = {
+    chats: Array.from(chatPicked),
+    account_id: parseInt($('#cAcc').value, 10),
+    days: parseFloat($('#cDays').value) || 7,
+    limit: parseInt($('#cLimit').value, 10) || 300,
+    scan: parseInt($('#cScan').value, 10) || 3000,
+    skip_bots: $('#cSkipBot').checked,
+    skip_premium: $('#cSkipPrem').checked,
+    capture_messages: $('#cCapture').checked,
+    text_limit: parseInt($('#cTextLimit').value, 10) || 4000,
+    tags: ($('#cTags').value || '').split(/[,，]/).map(x => x.trim()).filter(Boolean),
+  };
+  closeAll();
+  await guard(() => api('/api/tasks/collect', {method: 'POST', body: JSON.stringify(body)}),
+    `采集任务已创建（${body.chats.length} 个群）`);
+  loadTasks();
+}
+
+async function newMessageTask() {
+  const src = await uiPrompt({
+    title: '发送目标',
+    message: '• 直接填目标，逗号分隔（@name 或 user_id）\n• 或填 lead:线索来源名',
+    value: 'lead:',
+    label: '目标',
+  });
+  if (src === null || !String(src).trim()) return;
+  const text = await uiPrompt({
+    title: '发送内容',
+    message: '支持 {a|b} 变体、{name} 变量、HTML 超链接。',
+    label: '正文',
+  });
+  if (text === null || !text) return;
+  let html = false;
+  if (/<[a-z]/i.test(text)) {
+    html = await uiConfirm({title: '富文本', message: '检测到 HTML 标签，是否按富文本发送（超链接可点击）？', okText: '富文本发送'});
+  }
+  const body = {text, html, spintax: true, concurrency: 1, delay: 0};
+  if (src.indexOf('lead:') === 0) body.lead_source = src.slice(5).trim();
+  else body.peers = src.split(/[,\uff0c]/).map(x => x.trim()).filter(Boolean);
+  await guard(() => api('/api/tasks/message', {method: 'POST', body: JSON.stringify(body)}),
+    '群发任务已创建');
+  loadTasks();
+}
+
+/* ---------- 线索库 ---------- */
+let leadRows = [];
+
+async function loadLeads() {
+  try {
+    const [srcs, data] = await Promise.all([api('/api/leads/sources'), api('/api/leads?limit=500')]);
+    leadRows = data.items || [];
+    const el = $('#leadList');
+    if (!el) return;
+    $('#leadHint').textContent = leadRows.length
+      ? `共 ${data.count} 人 · ${srcs.length} 个来源` : '';
+    if (!leadRows.length) {
+      el.innerHTML = '<span class="muted">还没有采集到线索。先在任务中心点“采集发言人”。</span>';
+      return;
+    }
+    const bySrc = srcs.map(x => `<div class="leadsrc">
+      <b>${esc(x.source)}</b><span class="muted">${x.item_count} 人·有用户名 ${x.with_username || 0}</span>
+      <span style="flex:1"></span>
+      <button class="sm fit" onclick="viewLeadMsgs(null, '${esc(x.source).replace(/'/g, "\\'")}')">看对话</button>
+      <button class="sm fit write" onclick="sendToSource('${esc(x.source).replace(/'/g, "\\'")}')">向它群发</button>
+      </div>`).join('');
+    const list = leadRows.slice(0, 50).map(x =>
+      `<div class="leadrow"><span>${x.username ? '@' + esc(x.username) : esc(x.name || x.user_id)}</span>
+       <span class="muted">${esc(x.source)} · 发言 ${x.msg_count || 0} 条 · ${rel(x.last_msg_at)}</span>
+       <span style="flex:1"></span>
+       <button class="sm fit" onclick="viewLeadMsgs(${Number(x.user_id)}, '${esc(x.source).replace(/'/g, "\\'")}')">对话</button></div>`).join('');
+    el.innerHTML = bySrc + '<div class="hr"></div>' + list
+      + (leadRows.length > 50 ? `<div class="muted small">…共 ${leadRows.length} 条，导出 CSV 看全部</div>` : '');
+  } catch (e) { /* 未登录时静默 */ }
+}
+
+async function sendToSource(source) {
+  const text = await uiPrompt({
+    title: '向线索群发',
+    message: '向「' + source + '」的全部线索发送（支持 {a|b} 与 {name} 变量）。',
+    label: '正文',
+  });
+  if (text === null || !text) return;
+  await guard(() => api('/api/tasks/message', {method: 'POST', body: JSON.stringify(
+    {lead_source: source, text, spintax: true})}), '群发任务已创建');
+  loadTasks();
+}
+
+function toggleSessMode() {
+  const mode = (document.querySelector('input[name="sessMode"]:checked') || {}).value || 'upload';
+  $('#sessUploadBox').style.display = mode === 'upload' ? '' : 'none';
+  $('#sessFileBox').style.display = mode === 'file' ? '' : 'none';
+  $('#sessTextBox').style.display = mode === 'text' ? '' : 'none';
+}
+
+document.addEventListener('change', function (e) {
+  if (!e.target || e.target.id !== 'sfUpload') return;
+  const files = e.target.files || [];
+  const el = $('#sfUploadHint');
+  if (!el) return;
+  if (!files.length) { el.textContent = '尚未选择文件'; return; }
+  const names = Array.from(files).map(f => f.name + ' (' + Math.round(f.size / 1024) + 'KB)');
+  el.textContent = '已选 ' + files.length + ' 个：' + names.slice(0, 5).join('、')
+    + (names.length > 5 ? '…' : '');
+});
+
+async function _sessionUploadOne(file, label, proxy, tags) {
+  const q = new URLSearchParams();
+  if (label) q.set('label', label);
+  if (proxy) q.set('proxy', proxy);
+  if (tags && tags.length) q.set('tags', tags.join(','));
+  const path = '/api/accounts/import-session-upload' + (q.toString() ? '?' + q.toString() : '');
+  const headers = {'X-Filename': file.name};
+  if (!DEMO) {
+    const tok = ($('#token') && $('#token').value) || localStorage.getItem('tam_token') || '';
+    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+  }
+  if (DEMO) {
+    return {ok: true, total: 1, succeeded: 1, failed: 0,
+            items: [{ok: true, label: file.name, user_id: 900001}], filename: file.name};
+  }
+  const res = await fetch(path, {method: 'POST', body: file, headers});
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch (_) { data = {detail: text}; }
+  if (!res.ok) throw new Error(data.detail || data.error || res.statusText || '上传失败');
+  return data;
+}
+
+async function doSessionImport() {
+  const mode = (document.querySelector('input[name="sessMode"]:checked') || {}).value || 'upload';
+  const tags = $('#sfTags').value ? $('#sfTags').value.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const proxy = $('#sfProxy').value || null;
+  const label = $('#sfLabel').value || null;
+  try {
+    let r;
+    if (mode === 'upload') {
+      const input = $('#sfUpload');
+      const files = input && input.files ? Array.from(input.files) : [];
+      if (!files.length) { toast('请选择要上传的 .session 或 zip', 'err'); return; }
+      const merged = {ok: true, total: 0, succeeded: 0, failed: 0, items: []};
+      for (let fi = 0; fi < files.length; fi++) {
+        const f = files[fi];
+        const q = new URLSearchParams();
+        if (label) q.set('label', label);
+        if (proxy) q.set('proxy', proxy);
+        if (tags && tags.length) q.set('tags', tags.join(','));
+        const path = '/api/accounts/import-session-upload' + (q.toString() ? '?' + q.toString() : '');
+        const headers = {'X-Filename': f.name};
+        const title = files.length > 1
+          ? ('session 导入 文件 ' + (fi + 1) + '/' + files.length + ' · ' + f.name)
+          : ('session 导入 · ' + f.name);
+        const one = await fetchImportStream(path, {method: 'POST', body: f, headers: headers}, title);
+        merged.total += one.total || (one.items || []).length || 0;
+        merged.succeeded += one.succeeded || 0;
+        merged.failed += one.failed || 0;
+        merged.items = merged.items.concat(one.items || []);
+      }
+      r = merged;
+    } else if (mode === 'file') {
+      const path = ($('#sfPath').value || '').trim();
+      if (!path) { toast('请填写服务端本地路径', 'err'); return; }
+      r = await fetchImportStream('/api/accounts/import-sessions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path, scan: $('#sfScan').checked, label, proxy, tags}),
+      }, 'session 路径导入');
+    } else {
+      const text = ($('#sfText').value || '').trim();
+      if (!text) { toast('请粘贴 StringSession 文本', 'err'); return; }
+      r = await fetchImportStream('/api/accounts/import-session-strings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text, label, proxy, tags}),
+      }, 'StringSession 导入');
+    }
+    const items = r.items || [];
+    const okN = r.succeeded != null ? r.succeeded : items.filter(x => x.ok).length;
+    const badN = r.failed != null ? r.failed : items.length - okN;
+    const lines = items.map(it => it.ok
+      ? ('  ✓ ' + (it.label || it.file || '') + ' user_id=' + (it.user_id || (it.info && it.info.user_id) || '?'))
+      : ('  ✗ ' + (it.label || it.file || '') + ' ' + (it.error || '失败'))).join('\n');
+    out('session 导入完成：成功 ' + okN + '，失败 ' + badN + '\n' + (lines || JSON.stringify(r, null, 2)), true);
+    if (okN) { toast('导入成功 ' + okN + ' 个' + (badN ? '，失败 ' + badN : ''), badN ? '' : 'ok'); closeAll(); }
+    else toast('导入失败 0 成功，详情见日志区', 'err');
+    refresh();
+  } catch (e) { toast('失败：' + e.message, 'err'); out({error: String(e)}, true); }
+}
+
+async function viewLeadMsgs(userId, source) {
+  try {
+    const q = new URLSearchParams();
+    if (userId != null && userId !== '') q.set('user_id', String(userId));
+    if (source) q.set('source', source);
+    q.set('limit', '200');
+    const r = await api('/api/leads/messages?' + q.toString());
+    const msgs = r.messages || [];
+    const st = r.stats || {};
+    const titleBits = [];
+    if (userId) titleBits.push('用户 ' + userId);
+    if (source) titleBits.push(source);
+    const title = titleBits.join(' · ') || '对话记录';
+    closeAll();
+    $('#dTitle').textContent = '对话 · ' + title;
+    if (!msgs.length) {
+      $('#dBody').innerHTML = '<div class="chat-empty">没有对话记录。<br/>采集发言人时请勾选「同时存对话记录」。</div>';
+      $('#drawer').classList.add('on'); $('#bd').classList.add('on');
+      toast('没有对话记录', 'err');
+      return;
+    }
+    const stats = '<div class="chat-stats">本页 ' + msgs.length + ' 条'
+      + (st.total != null ? ' · 库内共 ' + st.total + ' 条 / ' + (st.speakers || '?') + ' 人' : '')
+      + '</div>';
+    const rows = msgs.map(function (m) {
+      const t = m.date ? new Date(m.date * 1000).toLocaleString() : '';
+      const who = m.username ? ('@' + m.username) : (m.name || ('#' + (m.user_id || '')));
+      const reply = m.reply_to ? (' · 回复 #' + m.reply_to) : '';
+      return '<div class="msg-row">'
+        + '<div class="msg-meta">' + esc(who) + ' · ' + esc(t) + esc(reply) + '</div>'
+        + '<div class="msg-bubble">' + esc(m.text || '（无文本）') + '</div>'
+        + '</div>';
+    }).join('');
+    $('#dBody').innerHTML = stats + '<div class="chat">' + rows + '</div>';
+    $('#drawer').classList.add('on'); $('#bd').classList.add('on');
+    toast('已加载 ' + msgs.length + ' 条对话', 'ok');
+  } catch (e) { toast('加载对话失败：' + e.message, 'err'); }
+}
+
+
+function exportLeads() {
+  if (!leadRows.length) { toast('现在没有线索可导出', 'err'); return; }
+  const head = ['user_id', 'username', 'name', 'source', 'msg_count', 'last_msg_at'];
+  const csv = [head.join(',')].concat(leadRows.map(r => head.map(k => {
+    const v = k === 'last_msg_at' ? fmt(r[k]) : (r[k] === null || r[k] === undefined ? '' : r[k]);
+    return '"' + String(v).replace(/"/g, '""') + '"';
+  }).join(','))).join('\n');
+  const blob = new Blob(['\ufeff' + csv], {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'tam-leads.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast(`已导出 ${leadRows.length} 条线索`, 'ok');
+}
+
+async function runDoctor() {
+  toast('正在体检并自动修复，可能需要一分钟…');
+  try {
+    const r = await api('/api/doctor/fix', {method: 'POST'});
+    const lines = (r.checks || []).map(c => {
+      const mark = c.status === 'ok' ? '✓' : (c.status === 'warn' ? '!' : '✗');
+      const fixed = c.fixed ? '（已自动修复）' : '';
+      const hint = c.hint && c.status !== 'ok' ? `\n     → ${c.hint}` : '';
+      return `${mark} ${c.name}：${c.detail || ''}${fixed}${hint}`;
+    });
+    out(lines.join('\n'), true);
+    if (r.ok) toast(r.fixed && r.fixed.length ? `体检通过，已自动修复 ${r.fixed.length} 项` : '体检全部通过', 'ok');
+    else toast(`${r.failed.length} 项未通过，详情见下方日志区`, 'err');
+    refresh();
+  } catch (e) { toast('体检失败：' + e.message, 'err'); out({error: String(e)}, true); }
+}
+
+async function hotReload() {
+  if (!await uiConfirm({
+    title: '热重载（真实重启）',
+    message: '将真实重启后端进程（os.execv），约 1–3 秒服务不可用。\\n进行中的导入/任务会中断。\\n确认继续？',
+    okText: '重启',
+    danger: true,
+  })) return;
+  try {
 
     uiProgress({title: '热重载', current: 0, total: 1, text: '正在请求重启…'});
     const r = await api('/api/system/restart', {
@@ -1866,7 +2328,6 @@ function render() {
       <td onclick="event.stopPropagation()">
         ${a.authorized ? '' : `<button class="sm write" onclick="startLogin(${a.id})">登录</button>`}
         <button class="sm write fit" onclick="startQrLogin(${a.id})" title="手机 Telegram 扫码授权">扫码登录</button>
-        ${a.code_url && !a.authorized ? `<button class="sm write" onclick="autoLogin(${a.id})">自动取码</button>` : ''}
         <button class="sm" onclick="check(${a.id})">检查</button>
       </td>
     </tr>`).join('') : emptyRowHtml();
@@ -1931,6 +2392,10 @@ function openDrawer(id) {
     <label class="f"><span>手机号</span><input id="ePhone" value="${esc(a.phone || '')}" /></label>
     <label class="f"><span>代理</span><input id="eProxy" value="${esc(a.proxy || '')}" placeholder="socks5://host:1080" /></label>
     <label class="f"><span>取码链接</span><input id="eCode" value="${esc(a.code_url || '')}" /></label>
+    <div class="row" style="gap:8px;margin:-6px 0 12px;align-items:center">
+      <button type="button" class="sm fit" id="eCodeTest" onclick="testCodeSource('eCode','eProxy','eCodeStatus')">测试取码链接</button>
+      <span class="muted" id="eCodeStatus">只读测试，不发送 Telegram 验证码</span>
+    </div>
     <label class="f"><span>标签（逗号分隔）</span><input id="eTags" value="${esc((a.tags || []).join(','))}" /></label>
     <div class="f">
       <span class="lbl">自动清设备</span>
@@ -1968,7 +2433,7 @@ function openDrawer(id) {
       <button class="danger write fit" onclick="regenSession(${a.id})" title="新设备指纹重新登录，旧 session 作废（防找回）">重生会话</button>
     </div>
     <div class="row">
-      ${a.code_url ? `<button class="write fit" onclick="autoLogin(${a.id})">自动取码登录</button>` : ''}
+      ${a.authorized ? '' : `<button class="write fit" onclick="startLogin(${a.id})">登录</button>`}
       <button class="write fit" onclick="startQrLogin(${a.id})" title="手机 Telegram 扫码授权，无需短信">扫码登录</button>
       <button class="write fit" onclick="terminate(${a.id})">清理其他设备</button>
       <button class="write fit" onclick="logout(${a.id})">退出登录</button>
@@ -2028,6 +2493,39 @@ const saveAccount = id => guard(async () => {
     tags: $('#eTags').value ? $('#eTags').value.split(',').map(s => s.trim()) : []})});
   closeAll(); return r;
 }, '已保存');
+
+function codeProbeSummary(r) {
+  const type = {json: 'JSON', html: 'HTML', text: '纯文本'}[r.response_type] || r.response_type;
+  return `${r.provider_label} · ${type} · ${r.code_present ? '当前检测到验证码' : '当前暂无验证码'}`
+    + (r.requires_prepare ? ' · 登录时会先启动监控' : '');
+}
+
+async function testCodeSource(urlId, proxyId, statusId, explicitUrl) {
+  const urlEl = $('#' + urlId);
+  const proxyEl = proxyId ? $('#' + proxyId) : null;
+  const status = $('#' + statusId);
+  const url = (explicitUrl || (urlEl && urlEl.value) || '').trim();
+  if (!url) {
+    if (status) status.textContent = '请先填写取码链接';
+    toast('请先填写取码链接', 'err');
+    return null;
+  }
+  if (status) status.textContent = '正在只读探测…';
+  try {
+    const r = await api('/api/code-sources/probe', {
+      method: 'POST',
+      body: JSON.stringify({url, proxy: (proxyEl && proxyEl.value) || null, timeout: 15}),
+    });
+    const summary = codeProbeSummary(r);
+    if (status) status.textContent = summary;
+    toast('取码链接可访问：' + summary, 'ok');
+    return r;
+  } catch (e) {
+    if (status) status.textContent = '探测失败：' + e.message;
+    toast('取码链接探测失败：' + e.message, 'err');
+    return null;
+  }
+}
 
 
 const check = id => guard(() => api(`/api/accounts/${id}/check`, {method:'POST'}), '检查完成');
@@ -2460,8 +2958,27 @@ async function qrLoginCancel() {
 }
 
 
-const autoLogin = id => guard(() => api(`/api/accounts/${id}/login/auto`, {method:'POST',
-  body: JSON.stringify({timeout:120})}), '自动取码登录完成');
+async function autoLogin(id, closeOnSuccess) {
+  const password = loginId === id && $('#lPass') ? ($('#lPass').value || null) : null;
+  const r = await guard(() => api(`/api/accounts/${id}/login/auto`, {method:'POST',
+    body: JSON.stringify({timeout:120, password})}), '自动接码登录完成');
+  if (r && closeOnSuccess) closeAll();
+  return r;
+}
+
+async function autoLoginFromModal() {
+  if (!loginId) return;
+  const btn = $('#lAutoBtn');
+  const hint = $('#lHint');
+  if (btn) btn.disabled = true;
+  if (hint) hint.textContent = '正在启动取码监控、发送验证码并等待新码…';
+  try {
+    const r = await autoLogin(loginId, true);
+    if (!r && hint) hint.textContent = '自动接码失败，请查看错误日志后重试。';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 /* 登录（内联表单，替代 prompt） */
 async function startLogin(id) {
@@ -2469,10 +2986,30 @@ async function startLogin(id) {
   const a = accounts.find(x => x.id === id);
   $('#lWho').textContent = a ? `${a.label} ${a.phone || ''}` : '';
   $('#lCode').value = $('#lPass').value = '';
+  $('#lHint').textContent = a && a.code_url
+    ? '尚未发送验证码。可手动发码后填写验证码，或点击自动接码登录。'
+    : '尚未发送验证码。点击“发送验证码”后手动填写收到的验证码。';
+  $('#lSendBtn').textContent = '发送验证码';
+  $('#lAutoBtn').style.display = a && a.code_url ? '' : 'none';
   openModal('mLogin');
-  guard(() => api(`/api/accounts/${id}/login/code`, {method:'POST'}), '验证码已发送');
 }
-const resend = () => guard(() => api(`/api/accounts/${loginId}/login/code`, {method:'POST'}), '已重发');
+async function resend() {
+  if (!loginId) return;
+  const btn = $('#lSendBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await guard(
+      () => api(`/api/accounts/${loginId}/login/code`, {method:'POST'}),
+      '验证码已发送',
+    );
+    if (r) {
+      $('#lHint').textContent = '验证码已发送，请填写收到的验证码后确认登录。';
+      btn.textContent = '重新发送验证码';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 const verify = () => guard(async () => {
   const body = {code: $('#lCode').value, password: $('#lPass').value || null};
   const r = await api(`/api/accounts/${loginId}/login/verify`, {method:'POST', body: JSON.stringify(body)});
@@ -2496,7 +3033,7 @@ async function bulk(kind) {
   if (kind === 'auto') {
     if (!await uiConfirm({title:'批量自动登录', message:'将对 ' + ids.length + ' 个账号串行执行「发码 → 自动取码 → 登录」。', danger:true, okText:'开始'})) return;
     const r = await runSerial(ids, async (id) => {
-      return await api('/api/accounts/' + id + '/auto-login', {
+      return await api('/api/accounts/' + id + '/login/auto', {
         method: 'POST', body: JSON.stringify({timeout: 120})});
     }, '批量自动登录');
     out(r, true);
@@ -2691,16 +3228,45 @@ async function bulkDelete() {
 }
 
 /* 批量导入 */
+function cleanImportPart(part) {
+  let value = part.trim();
+  if (value.length >= 2 && value.startsWith('`') && value.endsWith('`')) {
+    value = value.replace(/^`+|`+$/g, '').trim();
+  }
+  if (value.length >= 4 && ((value.startsWith('**') && value.endsWith('**')) ||
+      (value.startsWith('__') && value.endsWith('__')))) {
+    value = value.slice(2, -2).trim();
+  }
+  if (value.length >= 2 && value.startsWith('<') && value.endsWith('>')) {
+    value = value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function isMarkdownTableMeta(parts) {
+  if (parts.length && parts.every(p => /^:?-{3,}:?$/.test(p.replace(/\s/g, '')))) return true;
+  const names = new Set(parts.map(p => p.replace(/[\s_\/-]/g, '').toLowerCase()));
+  const hasPhone = ['phone', 'phonenumber', 'mobile', '手机号', '号码'].some(x => names.has(x));
+  const hasUrl = ['url', 'link', 'codeurl', '取码链接', '链接'].some(x => names.has(x));
+  return hasPhone && hasUrl;
+}
+
 function parseLines(text) {
   const ok = [], bad = [];
   text.split('\n').forEach((raw, i) => {
     const line = raw.trim().replace(/^\ufeff/, '');
     if (!line || line.startsWith('#')) return;
-    const parts = line.split(/\s*(?:\\\||\||｜|\t|,|;)\s*/).filter(Boolean);
+    const parts = line.split(/\s*(?:\\\||\||｜|\t|,|;)\s*/)
+      .map(cleanImportPart).filter(Boolean);
+    if (isMarkdownTableMeta(parts)) return;
     let phone = null, url = null, label = null;
     parts.forEach(p => {
       if (/^https?:\/\//i.test(p)) url = url || p;
-      else if (/^\+?\d[\d\s\-()]{5,}$/.test(p)) phone = phone || ('+' + p.replace(/[^\d]/g, ''));
+      else if (/^\+?\d[\d\s\-()]{5,}$/.test(p)) {
+        const digitCount = p.replace(/\D/g, '').length;
+        if (digitCount >= 7 && digitCount <= 15) phone = phone || ('+' + p.replace(/\D/g, ''));
+      }
+      else if (/^(?:#\s*)?\d+[.)]?$/i.test(p)) return;
       else label = label || p;
     });
     phone ? ok.push({phone, url, label}) : bad.push({line: i + 1, raw: line});
@@ -2715,6 +3281,18 @@ function previewImport() {
       (bad.length ? `，<span style="color:#a13f36">${bad.length} 行无法识别：第 ${bad.slice(0,5).map(b => b.line).join('、')} 行</span>` : '')
     : '解析预览：等待输入';
 }
+
+async function testFirstImportedCodeSource() {
+  const {ok} = parseLines($('#iText').value);
+  const first = ok.find(item => item.url);
+  if (!first) {
+    $('#iCodeStatus').textContent = '没有识别到取码链接';
+    toast('没有识别到取码链接', 'err');
+    return;
+  }
+  return testCodeSource('', 'iProxy', 'iCodeStatus', first.url);
+}
+
 const doImport = dry => guard(async () => {
   const r = await withWaitProgress(
     dry ? '试运行导入清单' : '批量导入账号',
@@ -4502,7 +5080,3 @@ document.addEventListener('keydown', function (e) {
     closeAiPanel();
   }
 });
-
-
-</script>
-</body>

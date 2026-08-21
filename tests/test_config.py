@@ -25,11 +25,12 @@ def _fresh_env(**kv: str) -> None:
 
 
 def test_inline_comment_and_quotes() -> None:
+    master_key = "abc123==abc123==abc123==abc123=="
     with tempfile.TemporaryDirectory() as tmp:
         env = Path(tmp) / ".env"
         env.write_text(
             "# 注释行\n"
-            "TAM_MASTER_KEY=abc123==   # 向导自动生成\n"
+            f"TAM_MASTER_KEY={master_key}   # 向导自动生成\n"
             "TAM_WEB_TOKEN=Tok3n-With_Comment  # Web/API 访问令牌\n"
             'TAM_READONLY_TOKEN="quoted-token"\n'
             "TAM_API_ID=\n"
@@ -41,7 +42,7 @@ def test_inline_comment_and_quotes() -> None:
         )
         _fresh_env()
         s = Settings.load(env)
-        assert s.master_key == "abc123==", s.master_key
+        assert s.master_key == master_key, s.master_key
         assert s.web_token == "Tok3n-With_Comment", repr(s.web_token)
         assert s.readonly_token == "quoted-token", repr(s.readonly_token)
         assert s.api_id == 0 and s.api_hash == ""

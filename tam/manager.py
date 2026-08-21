@@ -771,7 +771,7 @@ class AccountManager:
         适配导入格式：+1812xxxxxxx|https://tgapi.xxx/@user/<uuid>/GetHTML
         若帐号开了两步验证，必须预先传 password。
         """
-        from .codefetch import read_code, wait_for_code
+        from .codefetch import prepare_code_source, read_code, wait_for_code
 
         acc = self.db.get(account_id)
         if acc is None:
@@ -783,6 +783,9 @@ class AccountManager:
             baseline = await read_code(acc.code_url, proxy=proxy)
         except Exception:
             baseline = None
+        prepared = await prepare_code_source(acc.code_url, proxy=proxy)
+        if prepared.get("prepared"):
+            self.db.log(account_id, "fetch_code", True, "dynamic_monitor_started")
         await self.send_code(account_id)
         try:
             code = await wait_for_code(acc.code_url, exclude=baseline,

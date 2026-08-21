@@ -580,23 +580,7 @@ async function hotReload() {
     });
     out(r, true);
     toast(r.message || '正在重启…', 'ok');
-    // 轮询直到服务恢复
-    let ok = false;
-    for (let i = 0; i < 40; i++) {
-      await new Promise(res => setTimeout(res, 800));
-      uiProgress({
-        title: '热重载',
-        current: Math.min(i + 1, 40),
-        total: 40,
-        text: '等待服务恢复… (' + (i + 1) + '/40)',
-      });
-      try {
-        const res = await fetch('/api/stats', {
-          headers: {'Authorization': 'Bearer ' + (($('#token') && $('#token').value) || '')},
-        });
-        if (res.ok) { ok = true; break; }
-      } catch (_) {}
-    }
+    const ok = await waitForRestart(r.instance_id || null);
     uiProgress(null);
     if (ok) {
       toast('服务已恢复', 'ok');
@@ -608,19 +592,45 @@ async function hotReload() {
     uiProgress(null);
     // 重启瞬间请求可能被掐断，也当作进入轮询
     toast('连接中断，正在等待重启…', '');
-    let ok = false;
-    for (let i = 0; i < 40; i++) {
-      await new Promise(res => setTimeout(res, 800));
-      try {
-        const res = await fetch('/api/stats', {
-          headers: {'Authorization': 'Bearer ' + (($('#token') && $('#token').value) || '')},
-        });
-        if (res.ok) { ok = true; break; }
-      } catch (_) {}
-    }
+    const ok = await waitForRestart(null);
+    uiProgress(null);
     if (ok) { toast('服务已恢复', 'ok'); refresh(); }
     else toast('重启可能失败：' + e.message, 'err');
   }
+}
+
+async function waitForRestart(previousInstanceId) {
+  let sawUnavailable = false;
+  for (let i = 0; i < 40; i++) {
+    await new Promise(res => setTimeout(res, 800));
+    uiProgress({
+      title: '热重载',
+      current: i + 1,
+      total: 40,
+      text: '等待新进程启动… (' + (i + 1) + '/40)',
+    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1500);
+    try {
+      const res = await fetch('/api/system/status', {
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: {'Authorization': 'Bearer ' + (($('#token') && $('#token').value) || '')},
+      });
+      if (!res.ok) {
+        sawUnavailable = true;
+        continue;
+      }
+      const status = await res.json();
+      if (previousInstanceId && status.instance_id !== previousInstanceId) return true;
+      if (!previousInstanceId && sawUnavailable) return true;
+    } catch (_) {
+      sawUnavailable = true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return false;
 }
 
 function openErrorLog() {

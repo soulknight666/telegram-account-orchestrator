@@ -168,6 +168,7 @@ async def error_log_middleware(request: Request, call_next):
 
 
 _restart_lock = False
+_instance_id = f"{os.getpid()}-{time.time_ns()}"
 
 
 async def auth(authorization: str = Header(default="")) -> None:
@@ -1696,7 +1697,7 @@ async def system_restart(request: Request) -> dict[str, Any]:
 
     会中断所有进行中的导入/任务；约 1 秒后进程被替换。前端应轮询直到服务恢复。
     """
-    import sys
+    from .restart import RESTART_EXIT_CODE, build_restart_argv, spawn_restart_helper
 
     global _restart_lock
     if settings.readonly:
@@ -1717,7 +1718,7 @@ async def system_restart(request: Request) -> dict[str, Any]:
         level="info",
         source="system",
         path="/api/system/restart",
-        meta={"argv": sys.argv[:8]},
+        meta={"argv": list(build_restart_argv())[:10]},
     )
 
     async def _reexec() -> None:
@@ -1728,19 +1729,37 @@ async def system_restart(request: Request) -> dict[str, Any]:
                 db.conn.commit()
             except Exception:
                 pass
-            argv = [sys.executable] + sys.argv
+            argv = build_restart_argv()
             os.environ["TAM_RESTARTED_AT"] = str(time.time())
-            os.execv(sys.executable, argv)
+            if os.name == "nt":
+                if os.getenv("TAM_SUPERVISED") == "1":
+                    os._exit(RESTART_EXIT_CODE)
+                spawn_restart_helper(argv)
+                os._exit(0)
+            os.execv(argv[0], argv)
         except Exception as exc:  # noqa: BLE001
             # exec 失败则退化为退出，交给外部进程管理器拉起
             record_error(f"execv 失败，改为退出：{exc}", level="error", source="system")
             os._exit(42)
 
-    asyncio.create_task(_reexec())
+    restart_task = asyncio.create_task(_reexec())
+    _bg_tasks.append(restart_task)
     return {
         "ok": True,
         "message": "服务将在约 1 秒后真实重启，请稍候自动恢复",
         "pid": os.getpid(),
+        "instance_id": _instance_id,
+    }
+
+
+@app.get("/api/system/status", dependencies=[Depends(auth)])
+async def system_status() -> dict[str, Any]:
+    """Return process identity so the UI can prove a restart completed."""
+    return {
+        "ok": True,
+        "pid": os.getpid(),
+        "instance_id": _instance_id,
+        "restarted_at": os.getenv("TAM_RESTARTED_AT"),
     }
 
 

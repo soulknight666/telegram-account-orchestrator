@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from .release_config import ReleaseConfig
+from .restart import RESTART_EXIT_CODE
 
 
 class RuntimeState(str, Enum):
@@ -53,6 +54,7 @@ def build_runtime_command(
     env = os.environ.copy()
     env.update(config.to_env())
     env["PYTHONUNBUFFERED"] = "1"
+    env["TAM_SUPERVISED"] = "1"
     return RuntimeCommand(argv=argv, env=env)
 
 
@@ -87,6 +89,9 @@ class ProcessController:
         self._exit_code: int | None = None
         self._expected_stop = False
         self._lock = threading.RLock()
+        self._restart_argv: tuple[str, ...] | None = None
+        self._restart_cwd: str | None = None
+        self._restart_env: dict[str, str] | None = None
 
     @property
     def state(self) -> RuntimeState:
@@ -162,6 +167,9 @@ class ProcessController:
 
         with self._lock:
             self._process = process
+            self._restart_argv = argv
+            self._restart_cwd = str(Path(cwd)) if cwd is not None else None
+            self._restart_env = child_env.copy()
         self._set_state(RuntimeState.RUNNING)
         self._start_reader(process.stdout, "stdout")
         self._start_reader(process.stderr, "stderr")
@@ -187,6 +195,17 @@ class ProcessController:
             self._exit_code = code
             expected = self._expected_stop
             self._process = None
+            restart_argv = self._restart_argv
+            restart_cwd = self._restart_cwd
+            restart_env = self._restart_env
+        if code == RESTART_EXIT_CODE and not expected and restart_argv is not None:
+            self.log_callback("launcher", "收到热重载请求，正在重新启动 TAO 服务…")
+            try:
+                self.start(restart_argv, cwd=restart_cwd, env=restart_env)
+            except Exception as exc:  # noqa: BLE001
+                self.log_callback("stderr", f"热重载失败：{exc}")
+                self._set_state(RuntimeState.FAILED)
+            return
         self._set_state(RuntimeState.STOPPED if expected or code == 0 else RuntimeState.FAILED)
 
     def stop(self, *, timeout: float = 5.0) -> bool:

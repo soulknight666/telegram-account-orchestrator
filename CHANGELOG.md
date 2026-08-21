@@ -4,6 +4,27 @@ All notable changes follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-21
+
+### Added
+
+- Provider-based automatic verification-code retrieval with built-in `tghao` and generic adapters.
+- Read-only code-link probing and user-controlled code retrieval from the login flow.
+- Markdown table recognition for batch account imports.
+- Dependency lock file, unified application exceptions, and concurrency guards.
+
+### Changed
+
+- Split the Web UI into maintainable HTML, CSS, and JavaScript sources with a verified single-file build.
+- Require explicit confirmation before AI tools execute mutating operations.
+- Make the LLM request timeout configurable with `TAM_LLM_TIMEOUT`.
+
+### Fixed
+
+- Stop the login button from automatically requesting or retrieving a verification code.
+- Harden auto-code parsing, AI tool-call concurrency, error handling, and front-end rendering.
+- Replace unsafe `eval()` usage in the inherited GAF module with `ast.literal_eval()`.
+
 ### Added - Sprint 3 (2026-08-06)
 
 - **Dependency locking**: `requirements.lock` pins all dependencies to exact versions

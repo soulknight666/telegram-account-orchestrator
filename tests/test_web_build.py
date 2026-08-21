@@ -88,3 +88,16 @@ def test_code_source_probe_is_available_in_account_and_import_forms() -> None:
     assert 'id="eCodeTest"' in javascript
     assert "async function testCodeSource" in javascript
     assert "/api/code-sources/probe" in javascript
+
+
+def test_hot_reload_waits_for_a_new_process_instance() -> None:
+    javascript = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert "async function waitForRestart(previousInstanceId)" in javascript
+    assert "'/api/system/status'" in javascript
+    assert "status.instance_id !== previousInstanceId" in javascript
+    assert "fetch('/api/stats'" not in re.search(
+        r"async function hotReload\(\) \{(?P<body>.*?)\n\}\n\nasync function waitForRestart",
+        javascript,
+        re.S,
+    ).group("body")

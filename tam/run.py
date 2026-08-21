@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,6 +26,24 @@ from .config import Settings, _load_dotenv
 
 DEPLOYS = ("local", "server")
 FRONTENDS = ("web", "bot", "both")
+
+
+def _windows_child_command(argv: list[str]) -> tuple[str, ...]:
+    return (sys.executable, "-m", "tam.run", "--runtime-child", *argv)
+
+
+def _supervise_windows(argv: list[str]) -> int:
+    """Keep source/start-script launches alive across requested restarts."""
+    from .restart import RESTART_EXIT_CODE
+
+    env = os.environ.copy()
+    env["TAM_SUPERVISED"] = "1"
+    command = _windows_child_command(argv)
+    while True:
+        code = subprocess.call(command, env=env)
+        if code != RESTART_EXIT_CODE:
+            return code
+        print("收到热重载请求，正在重新启动 TAO 服务…", flush=True)
 
 
 def resolve_mode(deploy: str | None = None, frontend: str | None = None) -> tuple[str, str]:
@@ -344,8 +363,13 @@ def run(
         print("\n已停止。")
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int | None:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if os.name == "nt" and os.getenv("TAM_SUPERVISED") != "1" and "--runtime-child" not in raw_argv:
+        return _supervise_windows(raw_argv)
+
     p = argparse.ArgumentParser(prog="tam-run", description="TAM 统一启动（本地/服务器 × 网页/机器人）")
+    p.add_argument("--runtime-child", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--deploy", choices=DEPLOYS, help="默认读 TAM_DEPLOY，再默认 local")
     p.add_argument("--frontend", choices=FRONTENDS, help="默认读 TAM_FRONTEND，再默认 web")
     p.add_argument("--host")
@@ -357,7 +381,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="强制弹启动模式选择菜单")
     g.add_argument("--no-menu", dest="menu", action="store_false",
                    help="不弹菜单，直接用环境变量/默认值（守护进程用这个）")
-    args = p.parse_args(argv)
+    args = p.parse_args(raw_argv)
+    if args.runtime_child:
+        os.environ["TAM_SUPERVISED"] = "1"
     try:
         run(args.deploy, args.frontend, args.host, args.port, args.no_doctor,
             args.force, args.menu)
@@ -367,4 +393,4 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

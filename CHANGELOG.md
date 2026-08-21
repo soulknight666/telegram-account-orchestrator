@@ -4,6 +4,8 @@ All notable changes follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-22
+
 ### Fixed
 
 - Make Web hot reload restart the Windows source process and packaged runtime reliably, and wait for a new backend instance before reporting recovery.

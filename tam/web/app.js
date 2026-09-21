@@ -1,6 +1,16 @@
 const $ = s => document.querySelector(s);
 const DEMO = location.protocol === 'file:' || new URLSearchParams(location.search).has('demo');
 let accounts = [], stats = {total:0, by_status:{}}, sel = new Set(), filter = '', loginId = null, readonly = false;
+let accountsRevision = 0;
+let visibleCache = null;
+let filterCountsCache = null;
+
+function setAccounts(rows) {
+  accounts = Array.isArray(rows) ? rows : [];
+  accountsRevision++;
+  visibleCache = null;
+  filterCountsCache = null;
+}
 let kick = {enabled:false, hours:24, watched:0, due_now:0, next_at:null};
 
 /* ---------- 演示数据 ---------- */
@@ -102,6 +112,7 @@ async function api(path, opts = {}) {
       let msg = raw;
       try { const j = JSON.parse(raw); msg = j.detail || j.message || raw; } catch {}
       if (res.status === 401) msg = '令牌无效（401）：请核对 .env 里的 TAM_WEB_TOKEN';
+      if (res.status === 405) msg = '服务端仍在运行旧版本（405）。请关闭旧窗口后重新运行 start.bat，再按 Ctrl+F5 刷新页面';
       throw new Error(String(msg).slice(0, 400));
     }
     return res.json();
@@ -145,9 +156,16 @@ async function demoApi(path, opts) {
   return {ok:true, demo:true, path, body: opts.body ? JSON.parse(opts.body) : null};
 }
 /* ---------- 任务中心 ---------- */
-const TASK_KIND_CN = {send: '群发消息', collect_speakers: '采集发言人'};
+const TASK_KIND_CN = {send: '群发消息', collect_speakers: '采集发言人', auto_login: '自动登录'};
 const TASK_TONE = {running: 'ok', pending: '', stopping: 'warn', stopped: 'warn', done: 'ok', failed: 'err'};
 let taskTimer = null;
+const observedLoginTasks = new Set();
+
+async function refreshLoginAccounts() {
+  const [s, a] = await Promise.all([api('/api/stats'), api('/api/accounts')]);
+  stats = s; setAccounts(a);
+  render();
+}
 
 function esc(v) {
   return String(v === null || v === undefined ? '' : v)
@@ -158,13 +176,14 @@ function taskCard(t) {
   const pct = Math.max(0, Math.min(100, t.percent || 0));
   const tone = TASK_TONE[t.status] || '';
   const canStop = t.status === 'running' || t.status === 'pending';
-  return `<div class="taskrow">
+  return `<div class="taskrow" data-task-id="${t.id}" data-task-stage="${esc(t.status_cn || t.status)}">
     <div class="taskhead">
       <b>#${t.id} ${esc(t.title)}</b>
       <span class="pill ${tone}">${esc(t.status_cn || t.status)}</span>
       <span class="muted">${esc(TASK_KIND_CN[t.kind] || t.kind)} · ${rel(t.created_at)}</span>
       <span style="flex:1"></span>
       <button class="sm fit" onclick="taskDetail(${t.id})">明细</button>
+      ${t.kind === 'auto_login' && !t.live && t.fail_count ? `<button class="sm fit" onclick="retryLoginTask(${t.id})">重试失败账号</button>` : ''}
       ${canStop ? `<button class="sm fit warn" onclick="stopTask(${t.id})">停止</button>`
                 : `<button class="sm fit" onclick="delTask(${t.id})">删除</button>`}
     </div>
@@ -177,6 +196,16 @@ function taskCard(t) {
 async function loadTasks(manualClick) {
   try {
     const rows = await api('/api/tasks?limit=10');
+    let loginFinished = false;
+    for (const t of rows) {
+      if (t.kind !== 'auto_login') continue;
+      if (t.live) observedLoginTasks.add(t.id);
+      else if (observedLoginTasks.has(t.id)) loginFinished = true;
+    }
+    if (loginFinished) {
+      await refreshLoginAccounts();
+      for (const t of rows) if (!t.live) observedLoginTasks.delete(t.id);
+    }
     const el = $('#taskList');
     if (!el) return;
     if (!rows.length) {
@@ -184,18 +213,28 @@ async function loadTasks(manualClick) {
       $('#taskHint').textContent = '暂无任务';
     } else {
       el.innerHTML = rows.map(taskCard).join('');
-      const live = rows.filter(t => t.status === 'running' || t.status === 'pending').length;
+      const live = rows.filter(t => t.status === 'running' || t.status === 'pending' || t.status === 'stopping').length;
       $('#taskHint').textContent = live ? `${live} 个进行中 · 共 ${rows.length} 个` : `最近 ${rows.length} 个`;
       clearTimeout(taskTimer);
       if (live) taskTimer = setTimeout(loadTasks, 3000);
     }
+    updateNavBadges();
     if (manualClick) toast('任务列表已刷新', 'ok');
-  } catch (e) { if (manualClick) toast('任务列表加载失败：' + e.message, 'err'); }
+  } catch (e) {
+    if (manualClick) toast('任务列表加载失败：' + e.message, 'err');
+    clearTimeout(taskTimer);
+    taskTimer = setTimeout(loadTasks, 3000);
+  }
 }
 
+let loginDetailTimer = null;
+let taskDetailVersion = 0;
 async function taskDetail(id) {
+  const version = ++taskDetailVersion;
+  clearTimeout(loginDetailTimer);
   try {
     const t = await api(`/api/tasks/${id}?target_limit=200`);
+    if (version !== taskDetailVersion) return;
     const head = `任务 #${t.id}：${t.title}\n类型：${TASK_KIND_CN[t.kind] || t.kind}`
       + `\n状态：${t.status_cn || t.status}\n进度：${t.done_count}/${t.total}（${t.percent}%）`
       + `\n成功 ${t.ok_count} · 失败 ${t.fail_count} · 已跳过 ${t.skip_count}`
@@ -213,7 +252,13 @@ async function taskDetail(id) {
     $('#log').textContent = head + fail + '\n\n逐目标明细：\n' + lines.join('\n') + tail;
     $('#logRaw').textContent = JSON.stringify(t, null, 2);
     logPinned = true; $('#logPin').style.display = '';
-  } catch (e) { toast('读取任务失败：' + e.message, 'err'); }
+    if (t.kind === 'auto_login' && t.live) loginDetailTimer = setTimeout(() => taskDetail(id), 1000);
+    else if (t.kind === 'auto_login') await refreshLoginAccounts();
+  } catch (e) {
+    if (version !== taskDetailVersion) return;
+    $('#log').textContent = '任务状态连接中断，3 秒后重试；后台任务未取消。';
+    loginDetailTimer = setTimeout(() => taskDetail(id), 3000);
+  }
 }
 
 async function stopTask(id) {
@@ -407,6 +452,9 @@ document.addEventListener('change', function (e) {
   el.textContent = '已选 ' + files.length + ' 个：' + names.slice(0, 5).join('、')
     + (names.length > 5 ? '…' : '');
 });
+document.addEventListener('input', function (e) {
+  if (e.target && (e.target.id === 'iProxyPool' || e.target.id === 'iLinksPerProxy')) previewProxyCapacity();
+});
 
 async function _sessionUploadOne(file, label, proxy, tags) {
   const q = new URLSearchParams();
@@ -508,7 +556,7 @@ async function viewLeadMsgs(userId, source) {
     $('#dTitle').textContent = '对话 · ' + title;
     if (!msgs.length) {
       $('#dBody').innerHTML = '<div class="chat-empty">没有对话记录。<br/>采集发言人时请勾选「同时存对话记录」。</div>';
-      $('#drawer').classList.add('on'); $('#bd').classList.add('on');
+      $('#accountDetailDrawer').classList.add('on'); $('#accountDetailDrawer').setAttribute('aria-hidden', 'false'); $('#bd').classList.add('on');
       toast('没有对话记录', 'err');
       return;
     }
@@ -525,7 +573,7 @@ async function viewLeadMsgs(userId, source) {
         + '</div>';
     }).join('');
     $('#dBody').innerHTML = stats + '<div class="chat">' + rows + '</div>';
-    $('#drawer').classList.add('on'); $('#bd').classList.add('on');
+    $('#accountDetailDrawer').classList.add('on'); $('#accountDetailDrawer').setAttribute('aria-hidden', 'false'); $('#bd').classList.add('on');
     toast('已加载 ' + msgs.length + ' 条对话', 'ok');
   } catch (e) { toast('加载对话失败：' + e.message, 'err'); }
 }
@@ -953,10 +1001,15 @@ function humanize(d) {
     return L.join('\n');
   }
 
-  if (d.added !== undefined || d.updated !== undefined)
-    return `导入完成：新增 ${(d.added || []).length} 个，更新 ${(d.updated || []).length} 个`
-      + (d.skipped && d.skipped.length ? `，跳过 ${d.skipped.length} 个` : '')
-      + (d.dry_run ? '（试运行，未真正写库）' : '');
+  if (d.added !== undefined || d.updated !== undefined) {
+    const dup = (d.duplicates || []).length;
+    const exist = (d.existing || []).length;
+    const errs = (d.errors || []).length;
+    const blocked = Number(d.capacity_blocked || 0);
+    return `导入完成：解析 ${d.parsed_input ?? d.parsed ?? 0}，新增 ${(d.added || []).length} 个，更新 ${(d.updated || []).length} 个，` +
+      `重复 ${dup}，已存在 ${exist}，格式错误 ${errs}，容量不足 ${blocked}` +
+      (d.dry_run ? '（试运行，未真正写库）' : '');
+  }
 
   // doctor
   if (d.checks || d.report || (d.ok !== undefined && d.fixes !== undefined))
@@ -1166,16 +1219,33 @@ function kickHintLegacy(a) {
 /* ---------- 站内对话框（替代 prompt / confirm） ---------- */
 let _uiResolver = null;
 let _uiMode = 'confirm'; // confirm | prompt | progress
+// 独立任务进度：每个后台操作拥有自己的卡片，不再互相覆盖弹窗。
+const UI_TASKS = new Map();
+let UI_TASK_SEQ = 0;
+function uiTask(title) {
+  const id = 'task-' + (++UI_TASK_SEQ);
+  const host = document.createElement('div');
+  host.className = 'ui-task-card'; host.dataset.taskId = id;
+  host.setAttribute('aria-live', 'polite');
+  host.innerHTML = '<b></b><div class="ui-task-msg"></div><div class="ui-task-bar"><i></i></div><small></small><button type="button" class="ui-task-open sm" onclick="switchView(\'tasks\')">任务中心</button>';
+  let root = document.querySelector('#uiTasks');
+  if (!root) { root = document.createElement('div'); root.id='uiTasks'; root.className='ui-tasks'; document.body.appendChild(root); }
+  root.appendChild(host); UI_TASKS.set(id, host);
+  const api = { id, update(o){ o=o||{}; const total=o.total||1, cur=o.current||0; host.querySelector('b').textContent=o.title||title||'进行中'; host.querySelector('.ui-task-msg').textContent=o.message||''; host.querySelector('i').style.width=Math.max(0,Math.min(100,Math.round(cur/total*100)))+'%'; host.querySelector('small').textContent=o.text||(''+cur+' / '+total); }, close(){ host.remove(); UI_TASKS.delete(id); } };
+  api.update({title}); return api;
+}
 
 function uiClose() {
   const m = $('#mUi');
-  if (m) m.classList.remove('on');
+  if (m) { m.classList.remove('on'); m.classList.remove('progress-floating'); }
   // 仅当没有其它 modal 时关遮罩
   const any = [...document.querySelectorAll('.modal.on')].length;
   if (!any) $('#bd').classList.remove('on');
 }
 
+let uiFilePending = false;
 function uiResolve(ok) {
+  if (ok && uiFilePending) return;
   if (_uiMode === 'progress') return; // 进度中不可点确定取消走 resolve
   const r = _uiResolver;
   _uiResolver = null;
@@ -1194,10 +1264,12 @@ function uiOpenShell(title, msg) {
   $('#uiTitle').textContent = title || '提示';
   $('#uiMsg').textContent = msg || '';
   $('#uiInputWrap').style.display = 'none';
+  const oldFile = $('#uiFilePick'); if (oldFile) oldFile.remove();
   $('#uiProgWrap').style.display = 'none';
   $('#uiActions').style.display = '';
   $('#uiCancel').style.display = '';
   $('#uiOk').style.display = '';
+  $('#uiOk').disabled = false;
   $('#uiOk').className = 'primary';
   $('#uiOk').textContent = '确定';
   $('#uiCancel').textContent = '取消';
@@ -1247,53 +1319,68 @@ async function uiConfirmDanger(opts) {
 function uiPrompt(opts) {
   opts = opts || {};
   _uiMode = 'prompt';
+  uiFilePending = false;
   uiOpenShell(opts.title || '请输入', opts.message || '');
   $('#uiInputWrap').style.display = '';
   $('#uiInputLabel').textContent = opts.label || '内容';
-  const inp = $('#uiInput');
+  let inp = $('#uiInput');
+  // 多行输入用于批量账号/代理清单，保留统一的确认与取消逻辑。
+  if (opts.multiline && inp && inp.tagName !== 'TEXTAREA') {
+    const ta = document.createElement('textarea');
+    ta.id = 'uiInput'; ta.autocomplete = 'off'; ta.rows = 9;
+    ta.style.cssText = 'width:100%;min-height:180px;resize:vertical;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace';
+    inp.replaceWith(ta); inp = ta;
+  } else if (!opts.multiline && inp && inp.tagName === 'TEXTAREA') {
+    const input = document.createElement('input');
+    input.id = 'uiInput'; input.autocomplete = 'off';
+    inp.replaceWith(input); inp = input;
+  }
   inp.type = opts.password ? 'password' : 'text';
   inp.value = opts.value != null ? String(opts.value) : '';
   inp.placeholder = opts.placeholder || '';
   if (opts.danger) {
     $('#uiOk').className = 'danger-solid';
   }
+  if (opts.file) {
+    const file = document.createElement('input');
+    file.id = 'uiFilePick'; file.type = 'file'; file.accept = opts.fileAccept || '.csv,.txt';
+    file.style.cssText = 'margin-top:8px;width:100%';
+    let readVersion=0;
+    file.onchange = async () => {
+      const f=file.files&&file.files[0], version=++readVersion;
+      if (!f) return;
+      uiFilePending=true; $('#uiOk').disabled=true;
+      try {
+        const value=await f.text();
+        if (version!==readVersion || document.getElementById('uiFilePick')!==file) return;
+        inp.value=value;
+        uiFilePending=false; $('#uiOk').disabled=false;
+      } catch(_) {
+        if (document.getElementById('uiFilePick')===file) {
+          uiFilePending=false;
+          $('#uiOk').disabled=false;
+          file.value='';
+          toast('文件读取失败，请重新选择文件','err');
+        }
+      }
+    };
+    $('#uiInputWrap').appendChild(file);
+  }
   $('#uiOk').textContent = opts.okText || '确定';
   setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 30);
   inp.onkeydown = (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); uiResolve(true); }
+    if (e.key === 'Enter' && inp.tagName !== 'TEXTAREA') { e.preventDefault(); uiResolve(true); }
     if (e.key === 'Escape') { e.preventDefault(); uiResolve(false); }
   };
   return new Promise(resolve => { _uiResolver = resolve; });
 }
 
 /** 显示/更新/关闭进度。传 null 关闭。 */
+let legacyProgressCard = null;
 function uiProgress(opts) {
-  if (!opts) {
-    if (_uiMode === 'progress') {
-      _uiMode = 'confirm';
-      uiClose();
-    }
-    return;
-  }
-  _uiMode = 'progress';
-  _uiResolver = null;
-  if (!$('#mUi').classList.contains('on')) {
-    closeAll();
-    $('#mUi').classList.add('on');
-    $('#bd').classList.add('on');
-  }
-  $('#uiTitle').textContent = opts.title || '进行中';
-  $('#uiMsg').textContent = opts.message || '请稍候，不要关闭页面…';
-  $('#uiInputWrap').style.display = 'none';
-  $('#uiProgWrap').style.display = '';
-  $('#uiActions').style.display = 'none';
-  const cur = opts.current || 0;
-  const total = opts.total || 1;
-  const pct = Math.max(0, Math.min(100, Math.round(cur / total * 100)));
-  $('#uiProgBar').style.width = pct + '%';
-  $('#uiProgText').textContent = (opts.text != null)
-    ? opts.text
-    : (`第 ${cur} / ${total} 个` + (opts.detail ? ' · ' + opts.detail : ''));
+  if (!opts) { if (legacyProgressCard) legacyProgressCard.close(); legacyProgressCard=null; return; }
+  if (!legacyProgressCard) legacyProgressCard=uiTask(opts.title);
+  legacyProgressCard.update(opts);
 }
 
 /** 从参数面板缓存读取配置（未加载则用默认） */
@@ -1306,7 +1393,6 @@ function cfgInt(key, defVal) {
 function batchConc(defVal) {
   let n = cfgInt('TAM_BATCH_CONCURRENCY', defVal != null ? defVal : 3);
   if (n < 1) n = 1;
-  if (n > 32) n = 32;
   return n;
 }
 function regenConcDefault() {
@@ -1350,18 +1436,19 @@ async function runSerial(ids, worker, title) {
  * 并行池处理 id 列表，带进度条。
  * concurrency=1 即串行。返回 {total,ok,failed,results}
  */
-async function runPool(ids, worker, title, concurrency) {
+async function runPool(ids, worker, title, concurrency, waitForCompletion = false, maxConcurrency = 8) {
   const list = (ids || []).map(Number).filter(n => Number.isFinite(n));
   const total = list.length;
-  const conc = Math.max(1, Math.min(Number(concurrency) || 1, 8));
+  const conc = Math.max(1, Math.min(Math.floor(Number(concurrency)) || 1, maxConcurrency));
   const results = new Array(total);
   let done = 0, ok = 0, fail = 0;
   let cursor = 0;
   const title0 = title || '批量处理';
+  const task = uiTask(title0);
 
   function paint(currentLabel, extra) {
     const cur = Math.min(done + (currentLabel ? 1 : 0), total) || (total ? 1 : 0);
-    uiProgress({
+    task.update({
       title: title0 + (conc > 1 ? (' ×' + conc) : ''),
       current: done,
       total: total || 1,
@@ -1374,7 +1461,7 @@ async function runPool(ids, worker, title, concurrency) {
   }
 
   if (!total) {
-    uiProgress(null);
+    task.close();
     return {total: 0, ok: 0, failed: 0, results: []};
   }
   paint('准备中…');
@@ -1384,7 +1471,9 @@ async function runPool(ids, worker, title, concurrency) {
     const tmo = opTimeoutMs();
     paint(lab + ' 进行中（限' + Math.round(tmo / 1000) + 's）');
     try {
-      const r = await withTimeout(worker(id, idx), tmo, lab);
+      const r = waitForCompletion
+        ? await worker(id, idx)
+        : await withTimeout(worker(id, idx), tmo, lab);
       const row = (r && typeof r === 'object')
         ? Object.assign({ok: true, id: id}, r)
         : {ok: true, id: id, result: r};
@@ -1414,7 +1503,7 @@ async function runPool(ids, worker, title, concurrency) {
 
   const n = Math.min(conc, total);
   await Promise.all(Array.from({length: n}, () => workerLoop()));
-  uiProgress(null);
+  task.close();
   return {
     total: total,
     ok: ok,
@@ -1570,9 +1659,10 @@ function helpJump(a) {
 }
 
 function closeAll() {
+  clearOfficialCode();
   document.querySelectorAll('.modal').forEach(m => m.classList.remove('on'));
-  const dr = $('#drawer');
-  if (dr) dr.classList.remove('on');
+  const dr = $('#accountDetailDrawer');
+  if (dr) { dr.classList.remove('on'); dr.setAttribute('aria-hidden', 'true'); }
   $('#bd').classList.remove('on');
   document.body.classList.remove('modal-open');
   if (_uiResolver && _uiMode !== 'progress') {
@@ -1585,7 +1675,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); 
 async function refresh() {
   try {
     const [s, a] = await Promise.all([api('/api/stats'), api('/api/accounts')]);
-    stats = s; accounts = a;
+    stats = s; setAccounts(a);
     if (a.length && a[0].server_now) syncClock(a[0].server_now);
     render(); loadLogs(); loadKick(); loadTasks(); loadLeads();
     loadSettings(); loadOps(); renderZt();
@@ -1653,6 +1743,62 @@ async function probeMode() {
   }
 }
 
+/* ---------- 工作台导航与布局 ---------- */
+const viewKey = 'tam.view';
+const navKey = 'tam.nav.collapsed';
+const VIEW_NAMES = {accounts:'账号清单', tasks:'任务中心', toolbox:'工具箱', ziptools:'文件与导出', logs:'日志', settings:'设置'};
+let currentView = 'accounts';
+let navCollapsed = false;
+let navMobileOpen = false;
+
+function loadViewPrefs() {
+  try {
+    const saved = localStorage.getItem(viewKey);
+    if (saved && VIEW_NAMES[saved]) currentView = saved;
+  } catch (e) {}
+  try { navCollapsed = localStorage.getItem(navKey) === '1'; } catch (e) {}
+}
+function applyView() {
+  const shell = $('#appShell');
+  if (shell) {
+    shell.classList.toggle('nav-collapsed', navCollapsed);
+    shell.classList.toggle('nav-mobile-open', navMobileOpen);
+  }
+  document.querySelectorAll('[data-nav]').forEach(el => {
+    const on = el.dataset.nav === currentView;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-current', on ? 'page' : 'false');
+  });
+  document.querySelectorAll('[data-view]').forEach(el => {
+    const on = !el.dataset.view || el.dataset.view === currentView;
+    el.classList.toggle('view-hidden', !on);
+    el.setAttribute('aria-hidden', on ? 'false' : 'true');
+  });
+}
+function switchView(view) {
+  if (!VIEW_NAMES[view]) return;
+  currentView = view;
+  navMobileOpen = false;
+  try { localStorage.setItem(viewKey, view); } catch (e) {}
+  applyView();
+  if (view === 'tasks') loadTasks();
+  if (view === 'toolbox') loadOps();
+  if (view === 'ziptools') renderZt();
+  if (view === 'settings') loadSettings();
+  renderLayout();
+}
+function toggleSideNav() {
+  if (window.innerWidth <= 720) navMobileOpen = !navMobileOpen;
+  else navCollapsed = !navCollapsed;
+  try { localStorage.setItem(navKey, navCollapsed ? '1' : '0'); } catch (e) {}
+  applyView();
+}
+function updateNavBadges() {
+  const a = $('#navAccountCount'); if (a) a.textContent = String(accounts.length || 0);
+  const t = $('#navTaskCount');
+  if (t && $('#taskList')) t.textContent = String($('#taskList').querySelectorAll('.taskrow').length || 0);
+}
+
 /* ---------- 布局引擎（二维矩阵 + AABB 碰撞 + 下推 + 向上收紧） ---------- */
 const STAT_CN = {total: '账号总数', active: '已登录', new: '新建', unauthorized: '未授权',
   restricted: '受限', banned: '封禁', frozen: '冻结', error: '错误',
@@ -1714,7 +1860,11 @@ function defSize(k) {
   return {w: n, h: 6};
 }
 function domKeys() { return [...board().children].map(n => n.dataset && n.dataset.widget).filter(Boolean); }
-function visibleKeys() { return domKeys().filter(k => page().hidden.indexOf(k) < 0); }
+function widgetInView(k) {
+  const el = board() && [...board().children].find(n => n.dataset && n.dataset.widget === k);
+  return !el || !el.dataset.view || el.dataset.view === currentView;
+}
+function visibleKeys() { return domKeys().filter(k => page().hidden.indexOf(k) < 0 && widgetInView(k)); }
 function items() { return visibleKeys().map(k => itemOf(k)); }
 
 function itemOf(k) {
@@ -1882,8 +2032,9 @@ function renderLayout() {
   [...b.children].forEach(el => {
     const k = el.dataset && el.dataset.widget;
     if (!k) return;
-    const hidden = p.hidden.indexOf(k) >= 0;
+    const hidden = p.hidden.indexOf(k) >= 0 || (el.dataset.view && el.dataset.view !== currentView);
     el.classList.toggle('whidden', hidden);
+    el.classList.toggle('view-hidden', hidden);
     if (hidden) return;
     const it = itemOf(k);
     if (!drag || drag.k !== k) place(el, it, cw);
@@ -1933,6 +2084,8 @@ function resetSizes() {
 }
 function resetLayout() {
   try { localStorage.removeItem(layoutKey); } catch (e) {}
+  currentView = 'accounts'; navCollapsed = false; navMobileOpen = false;
+  try { localStorage.setItem(viewKey, 'accounts'); localStorage.setItem(navKey, '0'); } catch (e) {}
   location.reload();
 }
 function toggleEdit() {
@@ -2143,25 +2296,58 @@ window.addEventListener('resize', () => {
 });
 
 /* ---------- 渲染 ---------- */
+function accountMatches(a, statusFilter = filter, smartFilter = quickFilter, query = null) {
+  if (statusFilter && a.status !== statusFilter) return false;
+  if (smartFilter === 'noauth' && a.authorized) return false;
+  if (smartFilter === 'active' && !(a.authorized || a.status === 'active')) return false;
+  if (smartFilter === 'failed' && !(a.status === 'error' || a.status === 'unauthorized')) return false;
+  if (smartFilter === 'hascode' && !a.code_url) return false;
+  if (smartFilter === 'nocode' && a.code_url) return false;
+  if (smartFilter === 'has2fa' && a.has_2fa !== 1) return false;
+  if (smartFilter === 'nosaved2fa' && !(a.has_2fa === 1 && !a.has_twofa_saved && !a.twofa)) return false;
+  if (smartFilter === 'noproxy' && a.proxy) return false;
+  if (smartFilter.startsWith('twofa_') && a.twofa_result?.status !== smartFilter.slice(6)) return false;
+  const q = query == null ? (($('#q') && $('#q').value || '').trim().toLowerCase()) : query;
+  if (!q) return true;
+  const signature = [a.label, a.phone, a.username, (a.tags || []).join(',')].join(' ');
+  if (a._searchSignature !== signature) {
+    a._searchSignature = signature;
+    a._searchText = signature.toLowerCase();
+  }
+  return a._searchText.includes(q);
+}
 function visible() {
-  const q = $('#q').value.trim().toLowerCase();
-  return accounts.filter(a => {
-    if (filter && a.status !== filter) return false;
-    if (quickFilter === 'noauth' && a.authorized) return false;
-    if (quickFilter === 'has2fa' && a.has_2fa !== 1) return false;
-    if (quickFilter === 'nosaved2fa' && !(a.has_2fa === 1 && !a.has_twofa_saved && !a.twofa)) return false;
-    if (quickFilter === 'noproxy' && a.proxy) return false;
-    if (!q) return true;
-    return [a.label, a.phone, a.username, (a.tags || []).join(',')].join(' ').toLowerCase().includes(q);
-  });
+  const q = (($('#q') && $('#q').value || '').trim().toLowerCase());
+  const key = accountsRevision + '|' + filter + '|' + quickFilter + '|' + q;
+  if (visibleCache && visibleCache.key === key) return visibleCache.rows;
+  const rows = accounts.filter(a => accountMatches(a, filter, quickFilter, q));
+  visibleCache = {key, rows};
+  return rows;
 }
 
+
 const twofaShown = new Set();
-let quickFilter = '';  // '' | noauth | has2fa | nosaved2fa | noproxy
+let quickFilter = '';  // smart account predicates
+let tableLimit = 300;
 
 function twofaMask(pwd) {
   const n = Math.min(Math.max((pwd || '').length, 4), 16);
   return '*'.repeat(n);
+}
+
+async function shutdownService() {
+  if (!await uiConfirm({title:'关闭项目', message:'将关闭 TAO 后端服务，当前网页会失去连接；不会自动重启。确认？', okText:'关闭项目', danger:true})) return;
+  try {
+    await api('/api/system/shutdown', {method:'POST', body:JSON.stringify({confirm:true})});
+  } catch (_) {}
+  toast('项目已关闭。需要时请从原启动终端运行 start.bat。', 'ok');
+}
+function twofaResultBadge(a) {
+  const result=a.twofa_result;
+  const labels={success:'2FA 修改成功',failed:'2FA 修改失败',uncertain:'2FA 待核对',running:'2FA 处理中'};
+  if (!result || !labels[result.status]) return '';
+  const tip=(result.detail||'')+(result.task_id?' · 一条龙 #'+result.task_id:'');
+  return `<div><span class="tag twofa-result-${result.status}" title="${esc(tip)}">${labels[result.status]}</span></div>`;
 }
 function twofaCell(a) {
   if (a.has_2fa !== 1) {
@@ -2301,31 +2487,53 @@ function emptyRowHtml() {
 
 function setQuickFilter(k) {
   quickFilter = (quickFilter === k) ? '' : k;
+  tableLimit = 300;
   render();
+}
+let accountRenderTimer = null;
+function scheduleAccountRender() {
+  clearTimeout(accountRenderTimer);
+  accountRenderTimer = setTimeout(() => { tableLimit = 300; render(); }, 120);
 }
 
 function render() {
+  applyView();
   renderStats();
 
   const counts = stats.by_status || {};
   $('#chips').innerHTML = [['', '全部']].concat(Object.keys(counts).map(k => [k, `${k} ${counts[k]}`]))
     .map(([k, t]) => `<button class="chip${filter === k ? ' on' : ''}" onclick="setFilter('${k}')">${esc(t)}</button>`).join('');
   const qf = [
-    ['noauth', '未授权'],
-    ['has2fa', '有二验'],
-    ['nosaved2fa', '二验未存'],
-    ['noproxy', '无代理'],
+    ['active', '已登录'], ['noauth', '待登录'], ['failed', '登录失败'],
+    ['hascode', '有取码链接'], ['nocode', '缺取码链接'], ['has2fa', '有二验'],
+    ['nosaved2fa', '二验未存'], ['noproxy', '无代理'],
+    ['twofa_success', '改密成功'], ['twofa_failed', '改密失败'],
+    ['twofa_uncertain', '改密待核对'], ['twofa_running', '改密处理中'],
   ];
   const qfe = $('#qfilters');
-  if (qfe) qfe.innerHTML = qf.map(([k, lab]) =>
-    `<button class="chip${quickFilter === k ? ' on' : ''}" onclick="setQuickFilter('${k}')">${lab}</button>`
-  ).join('');
+  if (qfe) {
+    const query = (($('#q') && $('#q').value || '').trim().toLowerCase());
+    const countKey = accountsRevision + '|' + filter + '|' + query;
+    let qcounts;
+    if (filterCountsCache && filterCountsCache.key === countKey) {
+      qcounts = filterCountsCache.value;
+    } else {
+      // 分类计数与账号数据无关时复用缓存，勾选账号只更新行状态，不再扫描全库。
+      qcounts = Object.fromEntries(qf.map(([k]) => [k, 0]));
+      for (const a of accounts) {
+        for (const [k] of qf) if (accountMatches(a, filter, k, query)) qcounts[k]++;
+      }
+      filterCountsCache = {key: countKey, value: qcounts};
+    }
+    qfe.innerHTML = qf.map(([k, lab]) => `<button class="chip${quickFilter === k ? ' on' : ''}" onclick="setQuickFilter('${k}')">${lab} ${qcounts[k]}</button>`).join('');
+  }
 
   const rows = visible();
-  $('#tb').innerHTML = rows.length ? rows.map(a => `
+  const shownRows = rows.slice(0, tableLimit);
+  $('#tb').innerHTML = shownRows.length ? shownRows.map(a => `
     <tr class="${sel.has(a.id) ? 'sel' : ''}" onclick="openDrawer(${a.id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" style="width:16px;min-height:0" ${sel.has(a.id) ? 'checked' : ''} onclick="pick(${a.id},this.checked)" /></td>
-      <td><b>${esc(a.label)}</b></td>
+      <td><b>${esc(a.label)}</b>${twofaResultBadge(a)}${a.status_note ? `<div class="muted error-note" title="${esc(a.status_note)}">${esc(a.status_note)}</div>` : ''}</td>
       <td>${esc(fmtPhone(a.phone))}</td>
       <td class="hide-s">${esc(countryOf(a.phone))}</td>
       <td class="hide-s">${a.username ? '@' + esc(a.username) : '—'}</td>
@@ -2336,13 +2544,21 @@ function render() {
       <td class="hide-s">${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(' ') || '—'}</td>
       <td class="hide-s muted">${esc(kickCell(a))}</td>
       <td onclick="event.stopPropagation()">
+        <button class="icon-btn lock-toggle ${a.locked ? 'is-locked' : ''}" onclick="toggleAccountLock(${a.id},${!a.locked})" title="${a.locked ? '解锁账号' : '锁定账号（防止删除）'}" aria-label="${a.locked ? '解锁账号' : '锁定账号'}">${a.locked ? '🔒' : '🔓'}</button>
         ${a.authorized ? '' : `<button class="sm write" onclick="startLogin(${a.id})">登录</button>`}
         <button class="sm write fit" onclick="startQrLogin(${a.id})" title="手机 Telegram 扫码授权">扫码登录</button>
         <button class="sm" onclick="check(${a.id})">检查</button>
+        ${a.authorized ? `<button class="sm" onclick="openOfficialCode(${a.id})" title="用已登录会话读取实体 TG 客户端登录验证码">读取官方验证码</button>` : ''}
       </td>
     </tr>`).join('') : emptyRowHtml();
+  if (rows.length > tableLimit) {
+    $('#tb').insertAdjacentHTML('beforeend', '<tr><td colspan="12"><button type="button" class="fit" onclick="tableLimit += 300;render()">加载更多（已显示 ' + tableLimit + ' / ' + rows.length + '）</button></td></tr>');
+  }
 
   $('#selN').textContent = `已选 ${sel.size} 个`;
+  const bulkSummary = $('#bulkSelectionSummary');
+  if (bulkSummary) bulkSummary.dataset.count = String(sel.size);
+  syncTbSelection();
   $('#bulk').classList.toggle('on', sel.size > 0);
   $('#all').checked = rows.length > 0 && rows.every(a => sel.has(a.id));
   if (readonly) document.querySelectorAll('.write').forEach(b => b.disabled = true);
@@ -2367,12 +2583,25 @@ function renderStats() {
       el.dataset.widget = k;
       b.appendChild(el);
     }
+    // 统计卡片可能来自旧布局或热刷新后重新挂载；每次渲染都补齐视图归属，
+    // 确保切换到任务/工具等工作区时不会把动态统计卡片留在错误的视图中。
+    el.dataset.view = 'accounts';
     setInner(el, `<b>${v || 0}</b><span>${esc(wname(k).replace('统计 · ', ''))}</span>`);
   });
 }
-function setFilter(k) { filter = k; render(); }
+function setFilter(k) { filter = k; tableLimit = 300; render(); }
 function pick(id, on) { on ? sel.add(id) : sel.delete(id); render(); }
 function toggleAll(on) { visible().forEach(a => on ? sel.add(a.id) : sel.delete(a.id)); render(); }
+async function selectTwofaSuccess() {
+  try {
+    // Refresh first; a failed request must not select stale successful results.
+    await refreshLoginAccounts();
+    filter=''; quickFilter='twofa_success'; tableLimit=300;
+    sel=new Set(visible().filter(a=>a.twofa_result?.status==='success').map(a=>a.id));
+    render();
+    toast(`已仅选择 ${sel.size} 个改密成功账号（保留搜索条件），旧勾选已清除；可导出号包或 session`,'ok');
+  } catch(e) { toast('刷新改密结果失败，未变更选择：'+e.message,'err'); }
+}
 function clearSel() { sel.clear(); render(); }
 
 /* ---------- 详情抽屉 ---------- */
@@ -2432,6 +2661,7 @@ function openDrawer(id) {
       <button class="fit" onclick="twofaStatus(${a.id})" title="有无云密码、是否绑定辅助邮箱、重置等待期">二验状态</button>
       <button class="fit" onclick="devices(${a.id})">查看设备</button>
       <button class="fit" onclick="dialogs(${a.id})">最近会话</button>
+      ${a.authorized ? `<button class="fit" onclick="openOfficialCode(${a.id})">读取官方验证码</button>` : ''}
     </div>
     <div class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <button class="danger write fit" onclick="twofaReset(${a.id})" title="发起官方二验重置（通常约7天等待期）">发起2FA重置</button>
@@ -2452,7 +2682,9 @@ function openDrawer(id) {
     </div>
     <h2 style="font-size:14px;margin:20px 0 8px">该账号日志</h2>
     <pre id="dLog" style="max-height:320px">加载中…</pre>`;
-  $('#drawer').classList.add('on'); $('#bd').classList.add('on');
+  const detail = $('#accountDetailDrawer');
+  detail.classList.add('on'); detail.setAttribute('aria-hidden', 'false'); $('#bd').classList.add('on');
+  const closeButton = detail.querySelector('button'); if (closeButton) closeButton.focus();
   if (readonly) document.querySelectorAll('.write').forEach(b => b.disabled = true);
   api(`/api/logs?account_id=${id}&limit=20`)
     .then(l => $('#dLog').textContent = (l.length ? logLines(l) : '暂无日志'))
@@ -2511,7 +2743,7 @@ function codeProbeSummary(r) {
 }
 
 async function testCodeSource(urlId, proxyId, statusId, explicitUrl) {
-  const urlEl = $('#' + urlId);
+  const urlEl = urlId ? $('#' + urlId) : null;
   const proxyEl = proxyId ? $('#' + proxyId) : null;
   const status = $('#' + statusId);
   const url = (explicitUrl || (urlEl && urlEl.value) || '').trim();
@@ -2615,6 +2847,16 @@ async function exportAcc(id, fmt) {
   else if (fmt === 'pack') msg = '将导出 session+json 号包 zip（敏感凭证）。' + exportTwofaHint(id).replace(' · ', '') + '\n继续？';
   if (!await uiConfirm({title: '导出确认', message: msg, danger: true, okText: '导出'})) return;
   try {
+    if (fmt === 'tdata') {
+      const dep = await api('/api/system/opentele');
+      if (!dep.installed) {
+        const install = await uiConfirm({title:'需要安装 opentele', message:'当前环境未安装 opentele。是否一键安装后继续导出？', okText:'一键安装'});
+        if (!install) return;
+        const ir = await api('/api/system/install-opentele', {method:'POST', body:'{}'});
+        if (!ir.installed) throw new Error(ir.message || 'opentele 安装失败');
+        toast('opentele 安装完成，继续导出', 'ok');
+      }
+    }
     progress(true);
     if (fmt === 'string') {
       const r = await api('/api/accounts/' + id + '/export', {
@@ -2970,8 +3212,15 @@ async function qrLoginCancel() {
 
 async function autoLogin(id, closeOnSuccess) {
   const password = loginId === id && $('#lPass') ? ($('#lPass').value || null) : null;
-  const r = await guard(() => api(`/api/accounts/${id}/login/auto`, {method:'POST',
-    body: JSON.stringify({timeout:120, password})}), '自动接码登录完成');
+  const query_delay = Number($('#lQueryDelay').value);
+  const poll_interval = Number($('#lPollInterval').value);
+  const adaptive_timing = $('#lAdaptiveTiming') ? $('#lAdaptiveTiming').checked : true;
+  if (!Number.isFinite(query_delay) || query_delay < 0 || query_delay > 600 ||
+      !Number.isFinite(poll_interval) || poll_interval < 1 || poll_interval > 600) {
+    toast('等待时间须为 0-600 秒，查询间隔须为 1-600 秒', 'err');
+    return null;
+  }
+  const r = await submitLoginTask({account_ids:[id], timeout:120, password, query_delay, poll_interval, adaptive_timing, concurrency:1});
   if (r && closeOnSuccess) closeAll();
   return r;
 }
@@ -3020,6 +3269,48 @@ async function resend() {
     if (btn) btn.disabled = false;
   }
 }
+
+let officialCodeAccountId = null, officialCodeRequest = 0;
+function clearOfficialCode() {
+  officialCodeAccountId = null;
+  officialCodeRequest++;
+  if ($('#officialCodeValue')) $('#officialCodeValue').textContent = '';
+  if ($('#officialCodeCopy')) $('#officialCodeCopy').disabled = true;
+}
+function openOfficialCode(id) {
+  openModal('mOfficialCode');
+  officialCodeAccountId = id;
+  const a = accounts.find(x => x.id === id);
+  $('#officialCodeWho').textContent = a ? `${a.label || ''} ${a.phone || ''}` : `账号 #${id}`;
+  $('#officialCodeStatus').textContent = '请先在实体 TG 客户端发起登录，再点击读取。';
+  $('#officialCodeRead').disabled = false;
+}
+async function readOfficialCode() {
+  const id = officialCodeAccountId;
+  if (!id) return;
+  const request = ++officialCodeRequest;
+  const btn = $('#officialCodeRead'); btn.disabled = true;
+  $('#officialCodeValue').textContent = '';
+  $('#officialCodeCopy').disabled = true;
+  $('#officialCodeStatus').textContent = '正在通过管理器已有会话读取官方通知…';
+  try {
+    const r = await api(`/api/accounts/${id}/official-code`, {cache:'no-store'});
+    if (request !== officialCodeRequest) return;
+    $('#officialCodeValue').textContent = r.code || '';
+    $('#officialCodeCopy').disabled = !r.code;
+    $('#officialCodeStatus').textContent = r.code
+      ? `消息时间：${new Date(r.date).toLocaleString()}。请在实体客户端填写；有效性以 Telegram 校验为准。`
+      : '最近 10 分钟未找到登录验证码。请在实体 TG 客户端请求发码后，稍后再次读取。';
+  } catch (e) {
+    if (request === officialCodeRequest) $('#officialCodeStatus').textContent = '读取失败：' + e.message;
+  } finally { if (request === officialCodeRequest) btn.disabled = false; }
+}
+async function copyOfficialCode() {
+  const code = $('#officialCodeValue').textContent;
+  if (!code) return;
+  try { await navigator.clipboard.writeText(code); toast('验证码已复制', 'ok'); }
+  catch (_) { toast('请选中验证码手动复制', 'err'); }
+}
 const verify = () => guard(async () => {
   const body = {code: $('#lCode').value, password: $('#lPass').value || null};
   const r = await api(`/api/accounts/${loginId}/login/verify`, {method:'POST', body: JSON.stringify(body)});
@@ -3028,28 +3319,104 @@ const verify = () => guard(async () => {
 }, '登录成功');
 
 /* 批量（逐号进度条；可并行） */
+async function submitLoginTask(body) {
+  const r = await guard(() => api('/api/tasks/login', {method:'POST', body:JSON.stringify(body)}), '已加入登录队列');
+  if (r && r.task) {
+    closeAll();
+    await loadTasks();
+    await taskDetail(r.task.id);
+    $('#log').scrollIntoView({block:'nearest'});
+  }
+  return r;
+}
+
+async function retryLoginTask(id) {
+  const password = await uiPrompt({title:'重试失败账号', label:'两步验证密码（可选）', password:true});
+  if (password === null) return;
+  const timing = await promptAutoLoginTiming();
+  if (!timing) return;
+  return submitLoginTask({retry_task_id:id, password:password || null, ...timing, concurrency:batchConc(3)});
+}
+
+async function promptAutoLoginTiming() {
+  let query_delay = 60, poll_interval = 60, start_delay = 1;
+  for (;;) {
+    const pending = uiConfirm({title:'自动接码设置', okText:'开始任务'});
+    const fields = document.createElement('div');
+    fields.innerHTML = '<label class="f"><span>发码后等待（秒）</span><input id="batchQueryDelay" type="number" min="0" max="600"></label>' +
+      '<label class="f"><span>查询间隔（秒）</span><input id="batchPollInterval" type="number" min="1" max="600"></label>' +
+      '<label class="f"><span>启动抖动基准（秒，0 关闭）</span><input id="batchStartDelay" type="number" min="0" max="5" step="0.1"></label>' +
+      '<label class="row" style="gap:8px"><input id="batchAdaptiveTiming" type="checkbox" checked><span>智能调整等待</span></label>' +
+      '<p class="muted">首个账号立即开始，其余账号随机等待基准的 80%–120%。</p>';
+    $('#uiMsg').after(fields);
+    $('#batchQueryDelay').value = query_delay;
+    $('#batchPollInterval').value = poll_interval;
+    $('#batchStartDelay').value = start_delay;
+    const confirmed = await pending;
+    const delayInput = $('#batchQueryDelay');
+    const intervalInput = $('#batchPollInterval');
+    query_delay = delayInput.valueAsNumber;
+    poll_interval = intervalInput.valueAsNumber;
+    start_delay = $('#batchStartDelay').valueAsNumber;
+    const adaptive_timing = !!($('#batchAdaptiveTiming') && $('#batchAdaptiveTiming').checked);
+    fields.remove();
+    if (!confirmed) return null;
+    if (Number.isFinite(query_delay) && query_delay >= 0 && query_delay <= 600 &&
+        Number.isFinite(poll_interval) && poll_interval >= 1 && poll_interval <= 600 &&
+        Number.isFinite(start_delay) && start_delay >= 0 && start_delay <= 5) {
+      return {query_delay, poll_interval, start_delay, adaptive_timing};
+    }
+    toast('等待时间须为 0-600 秒，查询间隔须为 1-600 秒', 'err');
+    query_delay = 60; poll_interval = 60; start_delay = 1;
+  }
+}
+
 async function bulk(kind) {
   const ids = [...sel];
   if (!ids.length) { toast('请先勾选账号', 'err'); return; }
   if (kind === 'check') {
     const r = await runPool(ids, async (id) => {
       return await api('/api/accounts/' + id + '/check', {method: 'POST'});
-    }, '健康检查', batchConc(3));
+    }, '健康检查', Math.min(32, Math.max(1, cfgInt('TAM_HEALTH_CONCURRENCY', 12))));
     out(r, true);
     toast('健康检查 · 成功 ' + r.ok + ' / 共 ' + r.total + (r.failed ? '，失败 ' + r.failed : ''), r.failed ? 'err' : 'ok');
     refresh();
     return r;
   }
   if (kind === 'auto') {
-    if (!await uiConfirm({title:'批量自动登录', message:'将对 ' + ids.length + ' 个账号串行执行「发码 → 自动取码 → 登录」。', danger:true, okText:'开始'})) return;
-    const r = await runSerial(ids, async (id) => {
-      return await api('/api/accounts/' + id + '/login/auto', {
-        method: 'POST', body: JSON.stringify({timeout: 120})});
-    }, '批量自动登录');
-    out(r, true);
-    toast('自动登录 · 成功 ' + r.ok + ' / 共 ' + r.total + (r.failed ? '，失败 ' + r.failed : ''), r.failed ? 'err' : 'ok');
-    refresh();
-    return r;
+    const concurrency = batchConc(3);
+    const safety = concurrency > 8 ? '（提示：超过 8 并发会增加限流、代理复用和账号风控风险）' : '';
+    if (!await uiConfirm({title:'批量自动登录', message:'将对 ' + ids.length + ' 个账号执行「发码 → 自动取码 → 登录」（并行 ' + concurrency + '）。' + safety, danger:true, okText:'开始'})) return;
+    const password = await uiPrompt({
+      title: '统一两步验证密码',
+      message: '各账号密码相同时可填写；留空会分别使用账号已加密保存的二验密码。',
+      label: '二验密码（可选）',
+      password: true,
+    });
+    if (password === null) return;
+    const timing = await promptAutoLoginTiming();
+    if (timing === null) return;
+    return submitLoginTask({account_ids:ids, password:password || null, timeout:120, ...timing, concurrency});
+  }
+  if (kind === 'relogin') {
+    if (!await uiConfirmDanger({
+      title: '批量退出并重新登录',
+      message: '将清除选中 ' + ids.length + ' 个账号的本地旧会话，再通过手机号和取码链接重新登录。\n远端退出失败也会清理本地会话；重登失败时旧会话无法恢复。',
+      word: '重登',
+      okText: '下一步',
+    })) return;
+    const password = await uiPrompt({
+      title: '统一两步验证密码',
+      message: '各账号密码相同时可填写；留空会分别使用账号已加密保存的二验密码。',
+      label: '二验密码（可选）',
+      password: true,
+    });
+    if (password === null) return;
+    const timing = await promptAutoLoginTiming();
+    if (timing === null) return;
+    const concurrency = batchConc(3);
+    return submitLoginTask({account_ids:ids, password:password || null, timeout:120,
+      concurrency:concurrency, ...timing, relogin:true});
   }
 }
 async function bulkWarmup() {
@@ -3237,6 +3604,18 @@ async function bulkDelete() {
   refresh();
 }
 
+async function toggleAccountLock(id, locked) {
+  try { await api('/api/accounts/' + id + '/lock', {method:'POST', body:JSON.stringify({locked})});
+    toast(locked ? '账号已锁定，删除操作已保护' : '账号已解锁', 'ok'); await refresh();
+  } catch (e) { toast('切换锁定状态失败：' + e.message, 'err'); }
+}
+async function bulkLock(locked) {
+  const ids = [...sel]; if (!ids.length) { toast('请先勾选账号', 'err'); return; }
+  try { const r = await api('/api/accounts/batch-lock', {method:'POST', body:JSON.stringify({ids, locked})});
+    toast((locked ? '已锁定 ' : '已解锁 ') + r.changed + ' 个账号', 'ok'); await refresh();
+  } catch (e) { toast('批量锁定失败：' + e.message, 'err'); }
+}
+
 /* 批量导入 */
 function cleanImportPart(part) {
   let value = part.trim();
@@ -3250,6 +3629,8 @@ function cleanImportPart(part) {
   if (value.length >= 2 && value.startsWith('<') && value.endsWith('>')) {
     value = value.slice(1, -1).trim();
   }
+  if (value.startsWith('[')) value = value.slice(1).trim();
+  if (value.endsWith(']')) value = value.slice(0, -1).trim();
   return value;
 }
 
@@ -3263,10 +3644,19 @@ function isMarkdownTableMeta(parts) {
 
 function parseLines(text) {
   const ok = [], bad = [];
-  text.split('\n').forEach((raw, i) => {
+  // CSV-aware splitting: preserve commas and pipes inside quoted cells.
+  const rows = [];
+  let row = '', quoted = false;
+  for (const ch of String(text || '').replace(/\r\n?/g, '\n')) {
+    if (ch === '"') { quoted = !quoted; row += ch; }
+    else if (ch === '\n' && !quoted) { rows.push(row); row = ''; }
+    else row += ch;
+  }
+  if (row) rows.push(row);
+  rows.forEach((raw, i) => {
     const line = raw.trim().replace(/^\ufeff/, '');
     if (!line || line.startsWith('#')) return;
-    const parts = line.split(/\s*(?:\\\||\||｜|\t|,|;)\s*/)
+    const parts = line.split(/\s*(?:\\\||\||｜|\t|,|;|-{2,}\s*(?=\[?https?:\/\/))\s*/)
       .map(cleanImportPart).filter(Boolean);
     if (isMarkdownTableMeta(parts)) return;
     let phone = null, url = null, label = null;
@@ -3303,18 +3693,264 @@ async function testFirstImportedCodeSource() {
   return testCodeSource('', 'iProxy', 'iCodeStatus', first.url);
 }
 
+// 代理节点输入同时接受纯文本和常见 CSV：host,port[,username,password]。
+// 不把 CSV 的逗号直接当分隔符，避免带引号的密码/备注被拆坏。
+function parseProxyPoolInput(text) {
+  const raw=String(text||'').replace(/^\ufeff/,'').trim();
+  if(!raw)return [];
+  const rows=[];let row=[],cell='',quoted=false;
+  for(let i=0;i<raw.length;i++) {
+    const c=raw[i];
+    if(c==='"') {if(quoted&&raw[i+1]==='"'){cell+='"';i++;}else quoted=!quoted;}
+    else if(!quoted&&(c===','||c==='\n')) {row.push(cell.trim());cell='';if(c==='\n'){if(row.some(Boolean))rows.push(row);row=[];}}
+    else if(c!=='\r'||quoted)cell+=c;
+  }
+  if(quoted)throw Error('CSV 引号未闭合');
+  row.push(cell.trim());if(row.some(Boolean))rows.push(row);
+  const head=rows[0].map(x=>x.toLowerCase().replace(/[ _-]/g,''));
+  const hostNames=['host','ip','address','server','proxy'];
+  const isHeader=head.includes('port')&&head.some(x=>hostNames.includes(x));
+  const idx=(names,fallback)=>isHeader?head.findIndex(x=>names.includes(x)):fallback;
+  const hi=idx(hostNames,0),pi=idx(['port'],1),ui=idx(['username','user'],2),wi=idx(['password','pass','pwd'],3),ti=idx(['protocol','type','scheme'],-1);
+  const out=[],bad=[];
+  function node(value) {
+    value=value.trim();
+    if(!/^(?:socks[45]|https?):\/\//i.test(value)) {
+      const m=/^(\[[^\]]+\]|[^:\s]+):(\d+)(?::([^:]*):(.*))?$/.exec(value);
+      if(!m)throw Error('节点格式');
+      value='socks5://'+(m[3]?encodeURIComponent(m[3])+':'+encodeURIComponent(m[4]||'')+'@':'')+m[1]+':'+m[2];
+    }
+    const match=/^(socks[45]|https?):\/\/(?:[^@\s]+@)?(\[[^\]\s]+\]|[^:\/\s]+):(\d+)(?:\/)?$/i.exec(value);
+    if(!match||Number(match[3])<1||Number(match[3])>65535)throw Error('端口或主机');
+    return value;
+  }
+  for(const [n,r] of rows.entries()) {
+    if(isHeader&&n===0)continue;
+    try {
+      if(r.length===1)out.push(node(r[0]));
+      else if(r.every(x=>/^(socks[45]|https?):\/\//i.test(x)))out.push(...r.map(node));
+      else {
+        let host=r[hi]||'', port=r[pi]||'', user=r[ui]||'', pass=r[wi]||'', type=(r[ti]||'socks5').toLowerCase();
+        if(!host||!/^\d+$/.test(port))throw Error('主机或端口');
+        if(host.includes(':')&&!host.startsWith('['))host='['+host+']';
+        out.push(node(type+'://'+(user?encodeURIComponent(user)+':'+encodeURIComponent(pass)+'@':'')+host+':'+port));
+      }
+    } catch(_) {bad.push(n+1);}
+  }
+  if(bad.length)throw Error('代理第 '+bad.slice(0,20).join('、')+' 行格式错误；请修正后再提交（未丢弃任何行）');
+  return [...new Set(out)];
+}
+
+// 仅导出手机号与原始取码链接（不包含 session/二验），支持当前勾选的多个账号。
+async function bulkExportCodeLinks() {
+  const ids = [...sel];
+  if (!ids.length) { toast('请先勾选账号', 'err'); return; }
+  if (!await uiConfirm({title: '批量导出取码链接', message: `将导出选中的 ${ids.length} 个账号的手机号与取码链接。`, okText: '导出'})) return;
+  try {
+    progress(true);
+    const name = await _downloadBlob('/api/accounts/export-code-links', {ids}, 'code-links.txt');
+    toast('已导出 ' + name + '（' + ids.length + ' 个）', 'ok');
+  } catch (e) { toast('导出取码链接失败：' + e.message, 'err'); out({error: String(e)}, true); }
+  finally { progress(false); }
+}
+
+async function oneStopWizard() {
+  if (oneStopWizard.busy) return;
+  oneStopWizard.busy = true;
+  let tid = null, stage = '配置', importCommitted = false;
+  try {
+    const wizardPrompt = (step, title, opts) => uiPrompt(Object.assign({}, opts || {}, {
+      title: `一条龙 · ${step}/8 ${title}`,
+    }));
+    const text = await wizardPrompt(1, '账号清单', {label:'每行 手机号|取码链接', multiline:true});
+    if (text === null || !text.trim()) return;
+    const proxy = await wizardPrompt(2, '代理节点', {label:'多行节点或 CSV 文件', multiline:true, file:true});
+    if (proxy === null) return;
+    const nodes = parseProxyPoolInput(proxy);
+    if (proxy.trim() && !nodes.length) throw Error('代理内容未解析出有效节点');
+    const askNumber = async (step, title, value, min, max) => {
+      let input;
+      while (true) {
+        input = await wizardPrompt(step, title, {label:`范围 ${min}–${max}`, value:String(value)});
+        if (input === null) return null;
+        const n = Number(input);
+        if (input.trim() && Number.isSafeInteger(n) && n >= min && n <= max) return n;
+        toast(`${title} 请输入 ${min}–${max} 的整数`, 'err');
+      }
+    };
+    const capacity = await askNumber(3, '每节点全局容量（0 表示不限）', 0, 0, 1000000);
+    if (capacity === null) return;
+    const conc = await askNumber(4, '并行数（建议 8）', 8, 1, 32);
+    if (conc === null) return;
+    const delay = await askNumber(5, '发码后首次等待秒数', 8, 0, 600);
+    if (delay === null) return;
+    const interval = await askNumber(6, '查询间隔秒数（GetHTML 至少 60 秒）', 60, 1, 600);
+    if (interval === null) return;
+    const password = await wizardPrompt(7, '新2FA', {label:'留空保留当前密码；旧密码从已保存记录或接码页取得', password:true});
+    if (password === null) return;
+    let fmt;
+    while (true) {
+      const format = await wizardPrompt(8, '导出格式', {label:'pack（号包）或 session', value:'pack'});
+      if (format === null) return;
+      fmt = format.trim().toLowerCase();
+      if (['pack','session'].includes(fmt)) break;
+      toast('导出格式请输入 pack 或 session', 'err');
+    }
+    stage = '导入';
+    const card = uiTask('一条龙 · 导入');
+    let imported;
+    try {
+      card.update({text:'正在解析账号并统计全局节点容量…'});
+      imported = await api('/api/accounts/import', {method:'POST',body:JSON.stringify({text,
+        proxy_pool:nodes, links_per_proxy:capacity})});
+      importCommitted = true;
+    } finally { card.close(); }
+    const added=imported.added||[], updated=imported.updated||[], existing=imported.existing||[];
+    const duplicates=(imported.duplicates||[]).length, errors=(imported.errors||[]).length;
+    const blocked=Number(imported.capacity_blocked||0);
+    // parsed_input excludes malformed lines; duplicates are included exactly once.
+    if (Number(imported.parsed_input) !== added.length+updated.length+existing.length+duplicates+blocked)
+      throw Error('导入统计不一致，已停止后续操作，请查看导入结果');
+    const ids=[...new Set([...added,...updated,...existing].map(x=>x.id).filter(Number.isSafeInteger))];
+    out({one_stop_import:{parsed:imported.parsed_input,added:added.length,updated:updated.length,
+      existing:existing.length,duplicates,errors,capacity_blocked:blocked}},true);
+    if (!ids.length) throw Error('没有可处理账号');
+    if (errors || blocked || duplicates) {
+      if (!await uiConfirm({title:'导入结果确认',message:`有效处理 ${ids.length}，重复 ${duplicates}，格式错误 ${errors}，容量不足 ${blocked}。只继续有效账号？`})) return;
+    }
+    stage = '提交任务';
+    const task=await api('/api/tasks/one-stop',{method:'POST',body:JSON.stringify({account_ids:ids,
+      concurrency:conc,new_password:password,format:fmt,query_delay:delay,poll_interval:interval})});
+    tid=task.id;
+    toast(`一条龙任务 #${tid} 已创建，刷新后可从「一条龙记录」继续查看`,'ok');
+    await watchOneStop(tid, true);
+  } catch(e) {
+    const where = `一条龙${tid ? ' #' + tid : ''} · ${stage}`;
+    const detail = tid
+      ? `${where}：${e.message}。任务检查点已保留，可从记录页继续。`
+      : importCommitted
+        ? `${where}：${e.message}。导入结果已写入，但任务尚未创建。请先查看导入结果，再决定是否重试。`
+        : `${where}：${e.message}。任务尚未创建。`;
+    toast(detail, 'err');
+  } finally { oneStopWizard.busy=false; refresh(); }
+}
+
+const ONE_STOP_WATCHING = new Set();
+async function watchOneStop(tid, autoExport=false) {
+  if (ONE_STOP_WATCHING.has(tid)) return;
+  ONE_STOP_WATCHING.add(tid);
+  const card=uiTask('一条龙 #'+tid);
+  let transientErrors = 0;
+  try {
+    let state;
+    do {
+      try {
+        state=await api('/api/tasks/one-stop/'+tid);
+        transientErrors = 0;
+      } catch (e) {
+        transientErrors++;
+        if (transientErrors >= 10) throw e;
+        card.update({text:`暂时无法读取任务进度（${transientErrors}/10），正在自动重试…`});
+        await new Promise(resolve=>setTimeout(resolve, Math.min(5000, 500 * transientErrors)));
+        continue;
+      }
+      card.update({current:state.done_count,total:state.total,
+        text:`完成 ${state.done_count}/${state.total} · 成功 ${state.ok_count} · 失败 ${state.fail_count} · ${JSON.stringify(state.phases||{})}`});
+      if (!state.live) break;
+      await new Promise(resolve=>setTimeout(resolve,1000));
+    } while(true);
+    out({one_stop_task:tid,...state},true);
+    if (autoExport && state.phases?.ready > 0) await downloadOneStop(tid);
+    else toast(`一条龙 #${tid} 已结束，结果可在一条龙记录查看`);
+  } catch(e) { toast(`任务 #${tid}：${e.message}；服务端检查点保留，请从一条龙记录继续。`,'err'); }
+  finally { card.close(); ONE_STOP_WATCHING.delete(tid); }
+}
+async function downloadOneStop(tid) {
+  const name=await _downloadBlob('/api/tasks/one-stop/'+tid+'/export',{},'tao-one-stop.zip');
+  toast(`任务 #${tid} 已下载 ${name}；实际导出数量见包内 summary.json`,'ok');
+}
+async function oneStopHistory() {
+  const list=await api('/api/tasks/one-stop');
+  let panel=document.getElementById('oneStopHistory');
+  if (!panel) { panel=document.createElement('div');panel.id='oneStopHistory';document.body.appendChild(panel); }
+  panel.className='modal one-stop-history-modal';
+  panel.innerHTML='<h3>一条龙记录 · 刷新后仍可继续</h3><div class="body">'
+    + (list.length ? list.map(t=>{
+    const id=Number(t.id);
+    return `<div class="one-stop-row"><strong>#${id}</strong> ${esc(t.status_cn)} · ${t.done_count}/${t.total} · 可导出 ${t.phases?.ready||0}
+      <button onclick="watchOneStop(${id})">进度</button>
+      <button onclick="oneStopResults(${id})">结果清单</button>
+      ${t.live?`<button onclick="oneStopStop(${id})">停止排队</button>`:`<button onclick="oneStopResume(${id})">继续未完成项</button><button onclick="downloadOneStop(${id}).catch(e=>toast(e.message,'err'))">仅重新导出</button>`}</div>`;
+  }).join('') : '<div class="empty">暂无一条龙任务记录</div>')
+    + '</div><div class="foot"><button onclick="closeAll()">关闭</button></div>';
+  openModal('oneStopHistory');
+}
+async function oneStopResume(tid) {
+  try { await api('/api/tasks/one-stop/'+tid+'/resume',{method:'POST'}); await watchOneStop(tid,true); }
+  catch(e) {toast(e.message,'err');}
+}
+async function oneStopStop(tid) {
+  await api('/api/tasks/'+tid+'/stop',{method:'POST'});
+  toast('已停止排队；正在执行的单号将完成并保留检查点');
+}
+async function oneStopResults(tid) {
+  const rows=[];
+  for(let offset=0;;offset+=500) {
+    const page=await api(`/api/tasks/one-stop/${tid}?limit=500&offset=${offset}`);
+    rows.push(...page.targets);
+    if(page.targets.length<500)break;
+  }
+  const blob=new Blob([JSON.stringify({task_id:tid,results:rows},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`one-stop-${tid}-results.json`;
+  a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+let proxyCapacityTimer = null;
+async function previewProxyCapacity() {
+  clearTimeout(proxyCapacityTimer);
+  proxyCapacityTimer = setTimeout(async () => {
+    const box = $('#iCapacity');
+    const raw = ($('#iProxyPool')?.value || '').trim();
+    if (!box || !raw || DEMO) return;
+    const nodes = [...new Set(raw.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean))];
+    try {
+      const params = new URLSearchParams();
+      nodes.forEach(n => params.append('proxy_pool', n));
+      const limit = Number($('#iLinksPerProxy')?.value || 0);
+      if (limit > 0) params.set('capacity', String(limit));
+      const r = await api('/api/proxy/capacity?' + params.toString());
+      const used = (r.nodes || []).reduce((n, x) => n + (x.used || 0), 0);
+      const remain = limit ? (r.nodes || []).reduce((n, x) => n + Math.max(0, x.remaining || 0), 0) : null;
+      box.textContent = `节点 ${nodes.length} 个 · 已负责账号 ${used} 个` + (remain == null ? '' : ` · 剩余容量 ${remain}`);
+    } catch (e) { box.textContent = '容量预览暂不可用，提交时仍会进行全局校验'; }
+  }, 180);
+}
+
 const doImport = dry => guard(async () => {
+  const proxyFile = $('#iProxyCsv') && $('#iProxyCsv').files && $('#iProxyCsv').files[0];
+  let proxyPoolText = ($('#iProxyPool') && $('#iProxyPool').value || '');
+  if (proxyFile) proxyPoolText += '\n' + await proxyFile.text();
+  const proxyPool = parseProxyPoolInput(proxyPoolText);
   const r = await withWaitProgress(
     dry ? '试运行导入清单' : '批量导入账号',
     dry ? '解析中…' : '写入数据库中…',
     () => api('/api/accounts/import', {method:'POST', body: JSON.stringify({
       text: $('#iText').value,
       tags: $('#iTags').value ? $('#iTags').value.split(',').map(s => s.trim()) : [],
-      proxy: $('#iProxy').value || null, dry_run: dry})}),
+      proxy: $('#iProxy').value || null,
+      proxy_pool: proxyPool,
+      links_per_proxy: Math.max(0, parseInt(($('#iLinksPerProxy') && $('#iLinksPerProxy').value) || '0', 10) || 0),
+      dry_run: dry})}),
     120000);
   if (!dry) closeAll();
   return r;
-}, null).then(r => r && toast(dry ? '试运行完成，结果见日志区' : `导入完成：新增 ${(r.added||[]).length}，更新 ${(r.updated||[]).length}`, 'ok'));
+}, null).then(r => {
+  if (!r) return;
+  if (dry) return toast('试运行完成，结果见日志区');
+  const dup = (r.duplicates || []).length, exist = (r.existing || []).length;
+  const errors = (r.errors || []).length, blocked = Number(r.capacity_blocked || 0);
+  const msg = `导入完成：解析 ${r.parsed_input ?? r.parsed ?? 0}，新增 ${(r.added||[]).length}，更新 ${(r.updated||[]).length}，重复 ${dup}，已存在 ${exist}，格式错误 ${errors}，容量不足 ${blocked}`;
+  toast(msg, (errors || blocked) ? 'err' : 'ok');
+});
 
 function toggleTdataMode() {
   const mode = (document.querySelector('input[name="tdataMode"]:checked') || {}).value || 'upload';
@@ -3323,6 +3959,14 @@ function toggleTdataMode() {
 }
 
 document.addEventListener('change', function (e) {
+  if (e.target && e.target.id === 'iProxyCsv') {
+    const f = e.target.files && e.target.files[0];
+    if (f) f.text().then(t => {
+      const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      const box = $('#iPrev');
+      if (box) box.textContent = `已读取代理文件：${f.name}（${lines.length} 行，提交时自动去重并统计已有占用）`;
+    });
+  }
   if (!e.target || e.target.id !== 'tUpload') return;
   const files = e.target.files || [];
   const el = $('#tUploadHint');
@@ -3455,18 +4099,35 @@ async function doTdataInspect() {
 
 /* 自动刷新 */
 let timer = null;
+function syncStickyOffsets() {
+  const root = document.documentElement;
+  const header = document.querySelector('body > header');
+  const toolbar = document.querySelector('.card[data-widget="accounts"] .toolbar');
+  if (header) root.style.setProperty('--tao-header-height', Math.ceil(header.getBoundingClientRect().height) + 'px');
+  if (toolbar) root.style.setProperty('--tao-toolbar-height', Math.ceil(toolbar.getBoundingClientRect().height) + 'px');
+}
+syncStickyOffsets();
+if (typeof ResizeObserver !== 'undefined') {
+  const header = document.querySelector('body > header');
+  const toolbar = document.querySelector('.card[data-widget="accounts"] .toolbar');
+  if (header) new ResizeObserver(syncStickyOffsets).observe(header);
+  if (toolbar) new ResizeObserver(syncStickyOffsets).observe(toolbar);
+}
+window.addEventListener('resize', syncStickyOffsets);
 $('#auto').addEventListener('change', e => {
   clearInterval(timer);
   if (e.target.checked) timer = setInterval(refresh, 10000);
 });
 
 /* 启动 */
+loadViewPrefs();
 loadLayout();
+applyView();
 if (DEMO) {
   $('#demoBar').classList.add('on');
   $('#mode').textContent = '演示模式';
   $('#mode').className = 'pill ro';
-  accounts = MOCK.accounts; stats = MOCK.stats;
+  setAccounts(MOCK.accounts); stats = MOCK.stats;
   render();
   loadKick();
   loadTasks();
@@ -3497,6 +4158,8 @@ async function loadOps() {
     const r = await api('/api/toolbox/ops');
     TB_OPS = r.ops || [];
     if (!TB_CUR && TB_OPS.length) TB_CUR = TB_OPS[0].op;
+    // 自动刷新时重建工具箱前先保存当前草稿，避免并发/参数被清空。
+    tbSaveDraft();
     renderTb();
   } catch (e) {
     box.innerHTML = '<span class="muted">加载失败：' + esc(e.message) + '</span>';
@@ -3539,34 +4202,87 @@ function tbField(p) {
     ' placeholder="' + esc(dv ? '默认 ' + dv : '') + '" /></label>';
 }
 
+const TB_GROUPS = [['check', '账号检测'], ['messages', '消息与群组'], ['more', '更多工具']];
+let TB_BUSY = false;
+const TB_DRAFTS = new Map();
+function tbGroup(op) {
+  if (['quick_alive', 'alive', 'spam_check', 'twofa_status', 'okpay_balance'].includes(op.op)) return 'check';
+  if (/message|group|chat|member|contact|public|block/.test(op.op)) return 'messages';
+  return 'more';
+}
+function tbAdvanced(p) {
+  return !p.required && ['timeout', 'wait', 'limit'].includes(p.name);
+}
+function tbSaveDraft() {
+  const sp = tbSpec();
+  if (!sp) return;
+  const values = {};
+  for (const p of sp.params) {
+    if (p.type === 'password') continue;
+    const el = $('#tbp_' + p.name);
+    if (el) values[el.id] = {value:el.value, checked:el.checked};
+    if (p.type === 'privacy') for (const [key] of TB_PRIV_KEYS) {
+      const field = $('#tbpriv_' + key);
+      if (field) values[field.id] = {value:field.value};
+    }
+  }
+  const conc = $('#tbConc');
+  if (conc) values.tbConc = {value:conc.value};
+  TB_DRAFTS.set(sp.op, values);
+}
+function tbChoose(op) {
+  if (TB_BUSY || !TB_OPS.some(o => o.op === op)) return;
+  tbSaveDraft(); TB_CUR = op; renderTb();
+}
+function tbChooseGroup(group) {
+  const first = TB_OPS.find(o => tbGroup(o) === group);
+  if (first) tbChoose(first.op);
+}
+function syncTbSelection() {
+  const label = $('#tbSel'), button = $('#tbRun');
+  if (label) label.textContent = sel.size ? '已选择 ' + sel.size + ' 个账号' : '尚未选择账号，请先在账号列表勾选';
+  if (button) button.disabled = readonly || TB_BUSY || !sel.size || !tbSpec();
+}
+function toolboxJump(widget) {
+  const el = document.querySelector('[data-widget="' + widget + '"]');
+  if (!el) return;
+  el.hidden = false; el.style.display = '';
+  el.scrollIntoView({block:'center'});
+  el.setAttribute('tabindex', '-1'); el.focus({preventScroll:true});
+}
 function renderTb() {
   const box = $('#tbBody');
-  if (!box) return;
+  if (!box || TB_BUSY) return;
+  const previous = $('#tbOut');
+  const resultHTML = previous ? previous.innerHTML : '';
   const sp = tbSpec();
-  const opts = TB_OPS.map(function (o) {
-    return '<option value="' + esc(o.op) + '"' + (o.op === TB_CUR ? ' selected' : '') +
-      '>' + (o.danger ? '⚠ ' : '') + esc(o.label) + '</option>';
-  }).join('');
-
-  const warn = (sp && sp.danger)
-    ? '<div class="empty" style="border-color:#a33;color:#e88;margin:8px 0">' +
-      '⚠ 不可逆操作，执行前会再确认一次。建议先拿一个号试。</div>' : '';
-
+  const group = sp ? tbGroup(sp) : 'check';
+  const tabs = TB_GROUPS.map(([key,label]) => '<button type="button" class="fit" aria-pressed="' +
+    (group === key) + '" onclick="tbChooseGroup(\'' + key + '\')">' + label + '</button>').join('');
+  const opts = TB_OPS.filter(o => tbGroup(o) === group).map(o => '<option value="' + esc(o.op) + '"' +
+    (o.op === TB_CUR ? ' selected' : '') + '>' + (o.danger ? '⚠ ' : '') + esc(o.label) + '</option>').join('');
+  const basic = sp ? sp.params.filter(p => !tbAdvanced(p)).map(tbField).join('') : '';
+  const advanced = sp ? sp.params.filter(tbAdvanced).map(tbField).join('') : '';
   box.innerHTML =
-    '<label class="f"><span>操作</span>' +
-    '<select id="tbOp" onchange="TB_CUR=this.value;renderTb()">' + opts + '</select></label>' +
-    '<div class="muted" style="margin:4px 0 8px">' + (sp ? esc(sp.desc) : '') + '</div>' +
-    warn +
-    (sp ? sp.params.map(tbField).join('') : '') +
-    '<label class="f"><span>并发度</span>' +
-    '<input id="tbConc" type="number" min="1" max="32" ' +
-    'placeholder="留空 = 用参数面板里的 TAM_BATCH_CONCURRENCY" /></label>' +
-    '<div class="row" style="gap:8px;margin-top:8px">' +
-    '<button class="sm write" onclick="runTb()">对选中的号执行</button>' +
-    '<span class="muted" id="tbSel">已选 ' + sel.size + ' 个</span></div>' +
-    '<div id="tbOut" style="margin-top:10px"></div>';
-
-  if (readonly) box.querySelectorAll('.write').forEach(function (b) { b.disabled = true; });
+    '<div class="tb-steps">① 选择账号 → ② 选择工具与参数 → ③ 确认执行</div>' +
+    '<div class="tb-categories" role="group" aria-label="工具分类">' + tabs + '</div>' +
+    '<label class="f"><span>选择工具</span><select id="tbOp" onchange="tbChoose(this.value)">' + opts + '</select></label>' +
+    '<p class="muted">' + (sp ? esc(sp.desc || '') : '工具加载中，请稍后刷新') + '</p>' +
+    (sp && sp.danger ? '<div class="tb-warning">⚠ 此操作会更改账号或数据，执行前请核对所选账号；下一步会再次确认。</div>' : '') +
+    basic + (!basic ? '<p class="muted">无需额外填写参数，使用默认配置即可。</p>' : '') +
+    '<details class="tb-advanced"><summary>高级设置 · 超时 / 数量 / 并发</summary>' + advanced +
+    '<label class="f"><span>并发度</span><input id="tbConc" type="number" min="1" max="32" step="1" placeholder="留空使用全局并发设置" /></label></details>' +
+    '<p class="muted small">切换工具保留普通参数；密码仅用于当前表单，不保存到浏览器。</p>' +
+    '<div class="tb-actions"><span id="tbSel" role="status"></span>' +
+    '<button type="button" class="sm fit" onclick="toolboxJump(\'accounts\')">选择账号</button>' +
+    '<button id="tbRun" class="sm write" onclick="runTb()">' + (sp ? '开始 · ' + esc(sp.label) : '开始') + '</button></div>' +
+    '<div id="tbOut" aria-live="polite" style="margin-top:10px">' + resultHTML + '</div>';
+  const draft = TB_DRAFTS.get(TB_CUR) || {};
+  for (const [id, values] of Object.entries(draft)) {
+    const el = $('#' + id);
+    if (el) { el.value = values.value; if (values.checked !== undefined) el.checked = values.checked; }
+  }
+  syncTbSelection();
 }
 
 /* 把表单收成 params。数字留空就不传，让后端用默认值——
@@ -3586,9 +4302,15 @@ function tbCollect(sp) {
     }
     const el = $('#tbp_' + p.name);
     if (!el) continue;
-    if (p.type === 'bool') { out[p.name] = el.checked; continue; }
+    if (p.type === 'bool') {
+      if (p.required && !el.checked) { el.focus(); throw new Error('请确认：' + p.label); }
+      out[p.name] = el.checked; continue;
+    }
     const raw = String(el.value || '').trim();
-    if (!raw) continue;
+    if (!raw) {
+      if (p.required) { el.focus(); throw new Error('请填写：' + p.label); }
+      continue;
+    }
     if (p.type === 'int' || p.type === 'float') {
       const n = Number(raw);
       if (!isFinite(n)) throw new Error(p.label + ' 填的不是数字：' + raw);
@@ -3606,10 +4328,23 @@ function tbLabel(id) {
 }
 
 async function runTb() {
+  // 仅在提交瞬间防止重复点击；任务启动后释放界面，允许其它工具并行。
+  if (TB_BUSY || readonly) return;
+  TB_BUSY = true; syncTbSelection();
+  try { await runTbAction(); }
+  finally { TB_BUSY = false; syncTbSelection(); }
+}
+async function runTbAction() {
   const sp = tbSpec();
   if (!sp) return;
-  const ids = [...sel];
+  let ids = [...sel];
   if (!ids.length) { toast('先在账号列表里勾选要操作的号', 'err'); return; }
+  if (sp.op === 'twofa') {
+    const before = ids.length;
+    ids = ids.filter(id => { const a = accounts.find(x => x.id === id); return a && a.status === 'active' && a.authorized !== false; });
+    if (!ids.length) { toast('选中账号没有可用的 active 会话', 'err'); return; }
+    if (ids.length < before) toast(`已跳过 ${before - ids.length} 个非 active/未授权账号`, '');
+  }
 
   let params;
   try { params = tbCollect(sp); }
@@ -3623,7 +4358,8 @@ async function runTb() {
 
   const cel = $('#tbConc');
   const cv = cel ? String(cel.value || '').trim() : '';
-  let conc = cv ? Number(cv) : batchConc(3);
+  // 改 2FA 主要耗时在每个账号的 Telegram 往返；默认使用独立并发值，仍可在工具箱手动覆盖。
+  let conc = cv ? Number(cv) : (sp.op === 'twofa' ? cfgInt('TAM_TWOFA_CONCURRENCY', 6) : batchConc(3));
   if (!Number.isFinite(conc) || conc < 1) conc = 1;
   if (conc > 32) conc = 32;
 
@@ -3640,7 +4376,7 @@ async function runTb() {
         return Object.assign({account_id: id}, one);
       }
       return {ok: true, account_id: id, result: one};
-    }, '工具箱 · ' + sp.label, conc);
+    }, '工具箱 · ' + sp.label, conc, sp.op === 'twofa', sp.op === 'twofa' ? 32 : 8);
     // 适配 renderTbResult
     const adapted = {
       total: r.total,
@@ -3767,11 +4503,14 @@ function ztSay(id, html) {
   if (el) el.innerHTML = html;
 }
 
-function renderZt() {
+function renderZt(force = false) {
   const box = $('#ztBody');
   if (!box) return;
+  // 自动刷新只更新账号数据，不重建文件输入；否则用户已选择的 zip/tdata/session 会被浏览器清空。
+  if (!force && box.dataset.rendered === '1') return;
+  box.dataset.rendered = '1';
   box.innerHTML =
-    '<div class="muted" style="margin-bottom:8px">这三个工具处理的是你上传的号包文件，' +
+    '<div class="muted" style="margin-bottom:8px">以下工具处理上传文件，不使用账号列表的勾选。展开一个工具即可开始。' +
     '不碰库里已托管的号。结果拿完请点「用完删除」——号包是敏感物，' +
     '不要长期赖在服务器上。</div>' +
 
@@ -3859,6 +4598,20 @@ function renderZt() {
     '<button class="sm write" onclick="ztPasskey()">创建 Passkey 凭证包</button></div>' +
     '<div id="ztPkOut" style="margin:6px 0"></div>';
 
+  // Collapse sections without rebuilding their inputs, keeping selected files intact.
+  Array.from(box.querySelectorAll('h4')).forEach((heading, index) => {
+    const panel = document.createElement('details');
+    panel.className = 'zt-tool'; panel.open = index === 4;
+    const summary = document.createElement('summary');
+    summary.textContent = heading.textContent;
+    heading.before(panel); panel.appendChild(summary);
+    let next = heading.nextSibling;
+    while (next && next.nodeName !== 'H4') {
+      const following = next.nextSibling;
+      panel.appendChild(next); next = following;
+    }
+    heading.remove();
+  });
   if (readonly) box.querySelectorAll('.write').forEach(function (b) { b.disabled = true; });
 }
 /* ---------- ZIP 工具：动作 ---------- */
@@ -3874,7 +4627,7 @@ async function ztCleanup(job) {
   try {
     await ztFetch('/api/tools/unpack/' + encodeURIComponent(job), {method: 'DELETE'});
     toast('服务器上的临时文件已删干净', 'ok');
-    renderZt();
+      renderZt(true);
   } catch (e) {
     toast(e.message, 'err');
   }
@@ -5090,3 +5843,30 @@ document.addEventListener('keydown', function (e) {
     closeAiPanel();
   }
 });
+
+
+async function bulkReplaceProxy() {
+  const ids = [...sel];
+  if (!ids.length) return toast('请先勾选账号', 'err');
+  const input = await uiPrompt({title:'批量更换代理', label:'节点 URL（多个节点用逗号分隔）', message:'保留 session 和二验；新连接使用新代理，已有连接不强制中断。', placeholder:'socks5://user:password@host:1080'});
+  if (!input) return;
+  const limit = await uiPrompt({title:'每节点全局容量', label:'0 表示不限', placeholder:'0'});
+  if (limit === null) return;
+  const capacity = Number(limit || 0);
+  if (!Number.isSafeInteger(capacity) || capacity < 0) return toast('容量需要非负整数', 'err');
+    const body = {account_ids:ids, proxy_pool:input.split(/[,，\n]+/).map(x=>x.trim()).filter(Boolean), capacity, preview:true};
+    try {
+      const plan = await api('/api/accounts/batch-proxy', {method:'POST',body:JSON.stringify(body)});
+      const usage = (plan.usage || []).map(x=>`节点 ${x.node}：分配后 ${x.used} 个`).join('\n');
+      if (!await uiConfirm({
+        title: '确认更换代理',
+        message: `将迁移 ${plan.count} 个账号，跳过登录中 ${plan.skipped_busy.length} 个。\n${usage}\n\n确认更换？`,
+        danger: true,
+        okText: '确认更换',
+      })) return;
+      body.preview = false;
+    const result = await api('/api/accounts/batch-proxy', {method:'POST',body:JSON.stringify(body)});
+    toast(`已更换 ${result.count} 个账号；登录中跳过 ${result.skipped_busy.length} 个`, 'ok');
+    await refresh();
+  } catch(e) { toast(e.message, 'err'); }
+}

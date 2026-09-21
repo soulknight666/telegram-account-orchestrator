@@ -1,0 +1,106 @@
+TAO 前端布局重构验证记录
+生成时间: 2026-09-21 23:45:30 +08:00
+
+COMMAND: python tam/web/build.py
+Build complete: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tam\web\index.html (322,993 chars)
+EXIT: 0
+
+COMMAND: node --check tam/web/app.js
+EXIT: 0
+
+COMMAND: workspace python -m compileall -q tam
+EXIT: 0
+
+COMMAND: node tests/layout_ux.test.cjs
+layout shell contract passed
+EXIT: 0
+
+COMMAND: node tests/toolbox_ux.test.cjs
+Toolbox UX assertions passed
+EXIT: 0
+
+COMMAND: node tests/one_stop.test.cjs
+✔ one-stop delegates durable pipeline, capacity and timing before polling (9.8412ms)
+✔ export failure keeps server task id visible and does not repeat mutation (7.5597ms)
+✔ cancel configuration stops before data import or mutations (1.2586ms)
+✔ CSV credentials named user/password are not mistaken for headers (4.6358ms)
+✔ CSV IPv6 protocol and invalid rows are explicit (2.3466ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 40.3102
+EXIT: 0
+
+COMMAND: python -m pytest tests/test_web_build.py -q -p no:cacheprovider
+C:\msys64\ucrt64\bin\python.exe: No module named pytest
+EXIT: 1
+
+COMMAND: powershell -File rollback.ps1 -WhatIf
+What if: Performing the operation "Copy File" on target "Item: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tmp\frontend-layout-redesign-20260921\baseline\app.js Destination: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tam\web\app.js".
+What if: Performing the operation "Copy File" on target "Item: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tmp\frontend-layout-redesign-20260921\baseline\index.src.html Destination: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tam\web\index.src.html".
+What if: Performing the operation "Copy File" on target "Item: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tmp\frontend-layout-redesign-20260921\baseline\styles.css Destination: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tam\web\styles.css".
+What if: Performing the operation "Copy File" on target "Item: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tmp\frontend-layout-redesign-20260921\baseline\index.html Destination: C:\Users\yyj\Desktop\tgac\telegram-account-manager\tam\web\index.html".
+Rollback preview complete (no files changed).
+EXIT: 0
+
+HASHES (modified):
+[
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\app.js",
+    "Hash": "57CEC7C3EDC5354F0F8D5F4FA0ADEF2D600F637B98FC88F24056B992B4A2A55B"
+  },
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\index.src.html",
+    "Hash": "59937247C32172C74EB681D15F369C989B887998A183D78108F34A0B681055F1"
+  },
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\styles.css",
+    "Hash": "F474B76F681B419F3E9F8163F19A92AE48A7647FA621E4288C11357F7CE834C6"
+  },
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\index.html",
+    "Hash": "E388FED196D3C0B5ED0329AB225F0FEBB877A2EDBC7F8CED6CEED05A3A27EB93"
+  }
+]
+
+HASHES (baseline):
+[
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\app.js",
+    "Hash": "1BFF0609A495EA1A864464D7565E733999EC9585F063F4514FFE9A8C423C42DC"
+  },
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\index.src.html",
+    "Hash": "5DF6CB157FA1EBFF330811E50B7954EF43B0C51704D78578C3DB190FB8CA6B19"
+  },
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\styles.css",
+    "Hash": "4E969B54CFFE2FCD7A4CE203C7C882C1A12E97F0C7EA4DD886CCF42B4C6D4B41"
+  },
+  {
+    "Path": "C:\\Users\\yyj\\Desktop\\tgac\\telegram-account-manager\\tam\\web\\index.html",
+    "Hash": "326F1F195B7EDC797517EFF27B329006D003B8BB8E3B09FF31011D174D08F2B9"
+  }
+]
+
+Generated page equality: source placeholders expanded by tam/web/build.py; build command exit 0.
+COMMAND: build.py source expansion equality
+EXIT: 0
+OUTPUT: PASS
+
+FOLLOW-UP AFTER EOF NORMALIZATION:
+COMMAND: python tam/web/build.py
+OUTPUT: Build complete: tam/web/index.html (322,992 chars)
+EXIT: 0
+COMMAND: git diff --check -- tam/web/app.js tam/web/index.src.html tam/web/styles.css tests/test_web_build.py
+OUTPUT: no whitespace errors
+EXIT: 0
+COMMAND: node --check tam/web/app.js
+EXIT: 0
+COMMAND: node tests/layout_ux.test.cjs
+OUTPUT: layout shell contract passed
+EXIT: 0

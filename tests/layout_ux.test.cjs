@@ -8,6 +8,9 @@ const css = fs.readFileSync(path.join(__dirname, '../tam/web/styles.css'), 'utf8
 for (const id of ['appShell', 'sideNav', 'workspace', 'bulkGroupLogin', 'bulkGroupProxy', 'bulkGroupExport', 'bulkGroupTools', 'accountDetailDrawer']) {
   assert.ok(html.includes(`id="${id}"`), `missing ${id}`);
 }
+for (const cls of ['account-toolbar-head', 'account-filter-row', 'account-action-row']) {
+  assert.ok(html.includes(`class="${cls}"`), `missing ${cls}`);
+}
 assert.match(html, /data-nav="accounts"/);
 assert.match(html, /data-nav="tasks"/);
 assert.match(html, /id="accountDetailDrawer"[^>]*aria-hidden="true"/);
@@ -15,6 +18,8 @@ assert.match(css, /\.side-nav/);
 assert.match(css, /\.nav-collapsed/);
 assert.match(css, /\.bulk-group/);
 assert.match(css, /\.account-detail-drawer|\.drawer/);
+assert.match(css, /\.card\[data-widget="accounts"\] \.toolbar\{position:static/);
+assert.match(css, /\.quick-filters\{[^}]*min-width:0/);
 assert.match(source, /data-task-id/);
 assert.match(source, /aria-live="polite"/);
 

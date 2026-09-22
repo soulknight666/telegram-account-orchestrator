@@ -528,6 +528,47 @@ tbody tr.sel{background:var(--blue-soft)}
 .twofa-result-uncertain { color: #83590d; background: #fff0c9; }
 .twofa-result-running { color: #315e9d; background: #e1edff; }
 button.icon-btn.lock-toggle{border:0;background:transparent;font-size:16px;padding:3px 5px;cursor:pointer;opacity:.72;transition:transform .15s,opacity .15s}button.icon-btn.lock-toggle:hover{transform:scale(1.15);opacity:1}button.icon-btn.lock-toggle.is-locked{filter:saturate(1.25)}
+
+/* 账号表格工具栏：搜索、筛选、操作分层，表格滚动不再被 sticky 工具栏覆盖。 */
+.card[data-widget="accounts"] .toolbar{position:static;top:auto;z-index:auto;display:flex;flex-direction:column;align-items:stretch;gap:0;padding:0;overflow:visible;}
+.account-toolbar-head{display:flex;align-items:center;gap:10px;min-width:0;padding:12px 16px 10px;background:var(--soft);}
+.account-search{display:flex;align-items:center;gap:8px;flex:1 1 250px;min-width:190px;height:38px;padding:0 11px;border:1px solid var(--border);border-radius:9px;background:var(--canvas);box-sizing:border-box;}
+.account-search:focus-within{border-color:#8bb8ea;box-shadow:0 0 0 3px #4b8fe522;}
+.account-search-icon{color:var(--muted);font-size:20px;line-height:1;transform:rotate(-18deg);}
+.account-search input{width:100%;min-width:0;border:0!important;outline:0!important;background:transparent!important;padding:0!important;box-shadow:none!important;}
+.account-status-filters{display:flex;flex:0 1 auto;min-width:0;max-width:42%;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none;}
+.account-status-filters::-webkit-scrollbar{display:none;}
+.account-result-hint{flex:0 0 auto;color:var(--muted);font-size:12px;white-space:nowrap;}
+.account-filter-row{display:flex;align-items:flex-start;gap:10px;min-width:0;padding:0 16px 10px;background:var(--soft);border-bottom:1px solid var(--border);}
+.account-filter-label{flex:0 0 auto;padding:5px 0;color:var(--muted);font-size:12px;line-height:24px;}
+.card[data-widget="accounts"] .quick-filters{display:flex;flex:1 1 auto;width:0;min-width:0;max-width:100%;max-height:none;overflow-x:auto;overflow-y:hidden;align-content:center;align-items:center;flex-wrap:nowrap;padding:0 0 2px;scrollbar-width:thin;}
+.card[data-widget="accounts"] .quick-filters .chip{flex:0 0 auto;font-size:12px;}
+.account-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0;padding:10px 16px;background:var(--canvas);border-bottom:1px solid var(--border);}
+.account-selection-actions,.account-primary-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-width:0;}
+.account-primary-actions{margin-left:auto;}
+.account-more-actions{position:relative;flex:0 0 auto;}
+.account-more-actions summary{list-style:none;cursor:pointer;font-size:14px;padding:7px 12px;min-height:36px;border:1px solid var(--border);border-radius:8px;background:var(--canvas);}
+.account-more-actions summary::-webkit-details-marker{display:none;}
+.account-more-actions summary:after{content:'⌄';margin-left:7px;color:var(--muted);font-size:12px;}
+.account-more-actions[open]{flex-basis:100%;}
+.account-more-actions[open] summary:after{content:'⌃';}
+.account-more-menu{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding-top:8px;}
+.card[data-widget="accounts"] .bulk{position:static!important;top:auto!important;bottom:auto!important;z-index:auto;box-shadow:none;border-top:1px solid #c9def2;}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;}
+@media(max-width:720px){
+  .account-toolbar-head{flex-wrap:wrap;}
+  .account-search{flex:1 1 100%;}
+  .account-status-filters{max-width:calc(100% - 72px);}
+  .account-primary-actions{margin-left:0;}
+}
+@media(max-width:720px){
+  .account-toolbar-head,.account-filter-row,.account-action-row{padding-left:10px;padding-right:10px;}
+  .account-filter-row{gap:7px;}
+  .account-filter-label{font-size:11px;}
+  .card[data-widget="accounts"] .quick-filters{max-height:76px;}
+  .account-primary-actions,.account-selection-actions,.account-more-actions{width:100%;}
+  .account-primary-actions button,.account-more-actions summary{flex:1 1 auto;}
+}
 </style>
 </head>
 <body>
@@ -585,17 +626,33 @@ button.icon-btn.lock-toggle{border:0;background:transparent;font-size:16px;paddi
 
   <div class="card" data-widget="accounts" data-view="accounts">
     <div class="toolbar">
-      <input id="q" placeholder="搜索别名 / 手机号 / 用户名 / 标签" style="max-width:260px" oninput="scheduleAccountRender()" />
-      <span class="row fit" id="chips"></span>
-      <span class="row fit quick-filters" id="qfilters"></span>
-      <button class="fit" onclick="selectTwofaSuccess()" title="清除旧勾选，仅选择当前搜索范围内最新改密成功的账号">✓ 只选改密成功</button>
-      <span class="sp" style="flex:1"></span>
-      <button class="fit" onclick="openModal('mAdd')">添加账号</button>
-      <button class="fit" onclick="openModal('mImport')">批量导入</button>
-      <button class="fit primary tao-one-stop" onclick="oneStopWizard()">🚀 一条龙处理</button>
-      <button class="fit" onclick="oneStopHistory().catch(e=>toast(e.message,'err'))">一条龙记录 / 继续 / 导出</button>
-      <button class="fit" onclick="openModal('mSession')">session 导入</button>
-      <button class="fit" onclick="openModal('mTdata')">tdata 导入</button>
+      <div class="account-toolbar-head">
+        <label class="account-search" for="q"><span class="sr-only">搜索账号</span><span class="account-search-icon">⌕</span><input id="q" placeholder="搜索别名、手机号、用户名或标签" oninput="scheduleAccountRender()" /></label>
+        <span class="row fit account-status-filters" id="chips" aria-label="账号状态筛选"></span>
+        <span class="account-result-hint" id="accountResultHint">全部账号</span>
+      </div>
+      <div class="account-filter-row">
+        <span class="account-filter-label">快速筛选</span>
+        <span class="row fit quick-filters" id="qfilters" aria-label="快捷筛选"></span>
+      </div>
+      <div class="account-action-row">
+        <div class="account-selection-actions">
+          <button class="fit" onclick="selectTwofaSuccess()" title="清除旧勾选，仅选择当前搜索范围内最新改密成功的账号">✓ 只选改密成功</button>
+        </div>
+        <div class="account-primary-actions">
+          <button class="fit" onclick="openModal('mAdd')">添加账号</button>
+          <button class="fit" onclick="openModal('mImport')">批量导入</button>
+          <button class="fit primary tao-one-stop" onclick="oneStopWizard()">🚀 一条龙处理</button>
+        </div>
+        <details class="account-more-actions">
+          <summary class="fit">更多操作</summary>
+          <div class="account-more-menu">
+            <button class="fit" onclick="oneStopHistory().catch(e=>toast(e.message,'err'))">一条龙记录 / 继续 / 导出</button>
+            <button class="fit" onclick="openModal('mSession')">session 导入</button>
+            <button class="fit" onclick="openModal('mTdata')">tdata 导入</button>
+          </div>
+        </details>
+      </div>
     </div>
     <div class="bulk" id="bulk" aria-label="批量操作">
       <div class="bulk-selection" id="bulkSelectionSummary"><b id="selN">已选 0 个</b><button class="sm" onclick="clearSel()">取消选择</button></div>
@@ -3831,6 +3888,11 @@ function render() {
   }
 
   const rows = visible();
+  const resultHint = $('#accountResultHint');
+  if (resultHint) {
+    const query = (($('#q') && $('#q').value || '').trim());
+    resultHint.textContent = query ? `匹配 ${rows.length} 个` : `共 ${rows.length} 个`;
+  }
   const shownRows = rows.slice(0, tableLimit);
   $('#tb').innerHTML = shownRows.length ? shownRows.map(a => `
     <tr class="${sel.has(a.id) ? 'sel' : ''}" onclick="openDrawer(${a.id})">

@@ -66,17 +66,33 @@
 
   <div class="card" data-widget="accounts" data-view="accounts">
     <div class="toolbar">
-      <input id="q" placeholder="搜索别名 / 手机号 / 用户名 / 标签" style="max-width:260px" oninput="scheduleAccountRender()" />
-      <span class="row fit" id="chips"></span>
-      <span class="row fit quick-filters" id="qfilters"></span>
-      <button class="fit" onclick="selectTwofaSuccess()" title="清除旧勾选，仅选择当前搜索范围内最新改密成功的账号">✓ 只选改密成功</button>
-      <span class="sp" style="flex:1"></span>
-      <button class="fit" onclick="openModal('mAdd')">添加账号</button>
-      <button class="fit" onclick="openModal('mImport')">批量导入</button>
-      <button class="fit primary tao-one-stop" onclick="oneStopWizard()">🚀 一条龙处理</button>
-      <button class="fit" onclick="oneStopHistory().catch(e=>toast(e.message,'err'))">一条龙记录 / 继续 / 导出</button>
-      <button class="fit" onclick="openModal('mSession')">session 导入</button>
-      <button class="fit" onclick="openModal('mTdata')">tdata 导入</button>
+      <div class="account-toolbar-head">
+        <label class="account-search" for="q"><span class="sr-only">搜索账号</span><span class="account-search-icon">⌕</span><input id="q" placeholder="搜索别名、手机号、用户名或标签" oninput="scheduleAccountRender()" /></label>
+        <span class="row fit account-status-filters" id="chips" aria-label="账号状态筛选"></span>
+        <span class="account-result-hint" id="accountResultHint">全部账号</span>
+      </div>
+      <div class="account-filter-row">
+        <span class="account-filter-label">快速筛选</span>
+        <span class="row fit quick-filters" id="qfilters" aria-label="快捷筛选"></span>
+      </div>
+      <div class="account-action-row">
+        <div class="account-selection-actions">
+          <button class="fit" onclick="selectTwofaSuccess()" title="清除旧勾选，仅选择当前搜索范围内最新改密成功的账号">✓ 只选改密成功</button>
+        </div>
+        <div class="account-primary-actions">
+          <button class="fit" onclick="openModal('mAdd')">添加账号</button>
+          <button class="fit" onclick="openModal('mImport')">批量导入</button>
+          <button class="fit primary tao-one-stop" onclick="oneStopWizard()">🚀 一条龙处理</button>
+        </div>
+        <details class="account-more-actions">
+          <summary class="fit">更多操作</summary>
+          <div class="account-more-menu">
+            <button class="fit" onclick="oneStopHistory().catch(e=>toast(e.message,'err'))">一条龙记录 / 继续 / 导出</button>
+            <button class="fit" onclick="openModal('mSession')">session 导入</button>
+            <button class="fit" onclick="openModal('mTdata')">tdata 导入</button>
+          </div>
+        </details>
+      </div>
     </div>
     <div class="bulk" id="bulk" aria-label="批量操作">
       <div class="bulk-selection" id="bulkSelectionSummary"><b id="selN">已选 0 个</b><button class="sm" onclick="clearSel()">取消选择</button></div>

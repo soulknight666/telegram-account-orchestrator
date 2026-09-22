@@ -2529,6 +2529,11 @@ function render() {
   }
 
   const rows = visible();
+  const resultHint = $('#accountResultHint');
+  if (resultHint) {
+    const query = (($('#q') && $('#q').value || '').trim());
+    resultHint.textContent = query ? `匹配 ${rows.length} 个` : `共 ${rows.length} 个`;
+  }
   const shownRows = rows.slice(0, tableLimit);
   $('#tb').innerHTML = shownRows.length ? shownRows.map(a => `
     <tr class="${sel.has(a.id) ? 'sel' : ''}" onclick="openDrawer(${a.id})">

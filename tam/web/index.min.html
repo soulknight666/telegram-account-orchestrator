@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-j+jh/zBsZTpg3uFs+YCloHC6n4WPTfjKHERCy51MDK0=' 'sha256-KRFDsdQ6vgiV0HzmDYPUjx5cal6YeEGQZkjO6fe3NdU='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'; worker-src 'self' blob:" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTYiIGZpbGw9IiMwQzBDMEUiLz48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSg1IDE4LjUpIHNjYWxlKC4wNTE0KSI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoLTEwMCAtNDIwKSI+PGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjRjJGMEVBIiBzdHJva2Utd2lkdGg9IjkwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0xNjAgNDgxSDU1NUM1OTAgNDgxIDYwOCA0OTQgNjI2IDUyNEw3NjYgNzU2QzgwMCA4MTIgODU1IDgyNyA5MTUgODI3QTE3MyAxNzMgMCAxIDAgNzczIDU1NSIvPjxwYXRoIGQ9Ik0zMDYgNDg1Vjc2OEMzMDYgNzk4IDMyMiA4MTIgMzQyIDgxMkMzNjAgODEyIDM3MiA4MDEgMzg0IDc4MUw1NjYgNDgxIi8+PC9nPjxwYXRoIGQ9Ik01ODMgNjQwTDUzNCA3MTZINjMyWiIgZmlsbD0iI0M2RkYzRCIgc3Ryb2tlPSIjQzZGRjNEIiBzdHJva2Utd2lkdGg9IjMwIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9nPjwvZz48L3N2Zz4=" />
+<link rel="apple-touch-icon" href="/release/tao-touch.44d5de8a.png" />
+<meta name="theme-color" content="#0C0C0E" />
+<title>Telegram Account Orchestrator (TAO) — Self-hosted Multi-Account Manager</title>
+<meta name="description" content="Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and tdata import." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" media="print" data-fx-fonts="1" />
+<meta property="og:title" content="Telegram Account Orchestrator (TAO)" />
+<meta property="og:description" content="Self-hosted Telegram account manager and orchestration toolkit." />
+<script>!function(){try{var e=localStorage.getItem("tao.theme");e||(e=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"),document.documentElement.dataset.theme=e}catch(e){}}();
+</script>
+<link rel="stylesheet" href="/release/styles.min.19d56b61.css">
+</head>
+<body class="no-rail">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-accounts" viewBox="0 0 24 24"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20"/><circle cx="10" cy="8" r="3.5"/><path d="M20 20v-1.5a3.5 3.5 0 0 0-2.5-3.35M15.5 4.6a3.5 3.5 0 0 1 0 6.8"/></symbol>
+<symbol id="i-tasks" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+<symbol id="i-leads" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/></symbol>
+<symbol id="i-tools" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.8"/><rect x="13" y="4" width="7" height="7" rx="1.8"/><rect x="4" y="13" width="7" height="7" rx="1.8"/><rect x="13" y="13" width="7" height="7" rx="1.8"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.5-4M4 5v3.5h3.5M4 13a8 8 0 0 0 14.5 4M20 19v-3.5h-3.5"/></symbol>
+<symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></symbol>
+<symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+<symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></symbol>
+<symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></symbol>
+<symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></symbol>
+<symbol id="i-user-plus" viewBox="0 0 24 24"><circle cx="10" cy="8" r="3.5"/><path d="M3.5 20v-1.5A3.5 3.5 0 0 1 7 15h6a3.5 3.5 0 0 1 3.5 3.5V20M19 8v6M16 11h6"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5M5 20h14"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3L10 14M21 3l-7 18-4-7-7-4z"/></symbol>
+<symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+<symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></symbol>
+<symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/></symbol>
+<symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 .3 1.5 1 2 1.5 2C10 8 11 5 12 3z"/></symbol>
+<symbol id="i-wallet" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M16 14h2"/></symbol>
+<symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17h.01"/></symbol>
+<symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v9M6.3 6.8a8 8 0 1 0 11.4 0"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l4.5 4.5L19 7"/></symbol>
+<symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+</defs></svg>
+<div class="bar"><i id="prog"></i></div>
+
+<header class="topbar app-header">
+<a class="brand" id="taoBrand" href="#" data-onclick="switchView('accounts');return false" aria-label="TAO 账号管理器 · 回到账号清单">
+<span class="brand-mark fx-logo" id="taoLogo" aria-hidden="true"><svg viewBox="100 420 1050 470" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="82" stroke-linecap="round" stroke-linejoin="round"><path class="tl-s" pathLength="1" d="M160 481H555C590 481 608 494 626 524L766 756C800 812 855 827 915 827A173 173 0 1 0 773 555"/><path class="tl-s" pathLength="1" d="M306 485V768C306 798 322 812 342 812C360 812 372 801 384 781L566 481"/></g><path class="tl-tri" d="M583 640L534 716H632Z" fill="var(--accent,#C6FF3D)" stroke="var(--accent,#C6FF3D)" stroke-width="22" stroke-linejoin="round"/></svg></span>
+<b id="taoBrandText">Workspace</b>
+</a>
+<nav class="pillnav" id="mainNav" aria-label="主导航">
+<button type="button" class="nav-item active" data-nav="accounts" data-onclick="switchView('accounts')">账号<em id="navAccountCount">0</em></button>
+<button type="button" class="nav-item" data-nav="tasks" data-onclick="switchView('tasks')">任务<em id="navTaskCount">0</em></button>
+<button type="button" class="nav-item" data-nav="leads" data-onclick="switchView('leads')">线索</button>
+<button type="button" class="nav-item" data-nav="toolbox" data-onclick="switchView('toolbox')">工具</button>
+<button type="button" class="nav-item" data-nav-group="more" data-onclick="toggleMenu(this,'moreMenu')" aria-haspopup="menu" aria-expanded="false">更多<svg class="i sm"><use href="#i-chevron"/></svg></button>
+</nav>
+<div class="top-actions">
+<button type="button" class="cmdk" data-onclick="openPalette()" aria-label="搜索账号或操作"><svg class="i"><use href="#i-search"/></svg><span>搜索账号或操作…</span><kbd id="cmdkKey">Ctrl K</kbd></button>
+<button type="button" class="status-btn" data-onclick="toggleMenu(this,'statusMenu')" aria-haspopup="menu" aria-expanded="false" aria-label="连接状态与体检"><span class="pill" id="mode">完整权限</span></button>
+<button type="button" class="round-btn ghost" id="themeBtn" data-onclick="toggleTheme()" aria-label="切换明暗主题" title="切换明暗主题"><svg class="i"><use href="#i-moon"/></svg></button>
+</div>
+</header>
+<div class="demo" id="demoBar">演示模式：当前展示的是示例数据，未连接后端。启动 <code>python -m tam.cli serve</code> 后打开 http://127.0.0.1:8848 即为真实数据。</div>
+
+<div class="demo conn-bar" id="connBar" role="alert"><span id="connMsg"></span><span class="sp"></span><button type="button" class="sm" id="connSettings" data-onclick="switchView('settings')">去设置</button><button type="button" class="sm" data-onclick="retryConnect()">重试</button></div>
+
+<div class="stage" id="appShell">
+<aside class="rail" data-view="accounts" aria-label="账号概览" tabindex="0" aria-describedby="overviewSwipeHint">
+<span id="overviewSwipeHint" class="sr-only">左右滑动或使用方向键浏览账号概览</span>
+<div id="accountOverview" class="account-overview" style="display:contents" aria-label="账号统计"></div>
+<div class="kickbar" id="kickbar" data-widget="kickbar" data-view="accounts" style="display:none">
+<span id="kickText">—</span>
+<label class="row" title="踢失败或校验未通过后隔多久重试。写法：45s / 10m / 2h / 1h30m">
+<span>失败重试</span>
+<input id="kickRetry" placeholder="1h" />
+</label>
+<div class="kick-actions">
+<button class="fit write sm" data-onclick="saveKickRetry()" title="保存重试间隔（留空恢复默认）">保存</button>
+<button class="fit write sm" data-onclick="kickNow()" title="不等后台定时器，立即对到期账号清一次其它设备">立即执行</button>
+</div>
+</div>
+</aside>
+
+<main class="content" id="workspace">
+<div class="board" id="board">
+
+<div class="card accounts-panel" data-widget="accounts" data-view="accounts">
+<div class="toolbar">
+<label class="account-search" for="q"><span class="sr-only">搜索账号</span><svg class="i"><use href="#i-search"/></svg><input id="q" placeholder="搜索别名、手机号、用户名或标签" data-oninput="scheduleAccountRender()" /></label>
+<div class="seg" id="chips" role="group" aria-label="账号状态筛选"></div>
+<button type="button" class="fit filter-btn" id="filterBtn" data-onclick="toggleMenu(this,'filterPop')" aria-haspopup="true" aria-expanded="false"><svg class="i"><use href="#i-filter"/></svg>筛选<em id="filterBadge"></em></button>
+<span class="account-result-hint" id="accountResultHint">全部账号</span>
+<div class="tools-right">
+<button type="button" class="round-btn ghost" data-onclick="refresh()" aria-label="刷新数据" title="刷新数据"><svg class="i"><use href="#i-refresh"/></svg></button>
+<button type="button" class="fit add-btn" data-onclick="toggleMenu(this,'addMenu')" aria-haspopup="menu" aria-expanded="false"><svg class="i"><use href="#i-plus"/></svg>添加账号<svg class="i sm"><use href="#i-chevron"/></svg></button>
+<button type="button" class="fit primary tao-one-stop" data-onclick="oneStopWizard()"><svg class="i"><use href="#i-zap"/></svg>一条龙处理</button>
+</div>
+</div>
+<div class="scroll">
+<table>
+<thead><tr>
+<th><input type="checkbox" id="all" aria-label="全选当前列表" data-onclick="toggleAll(this.checked)" /></th>
+<th>别名</th><th>手机号</th><th class="hide-s">国家/地区</th><th class="hide-s">用户名</th><th>状态</th>
+<th class="hide-s" title="两步验证密码；默认打码，点眼睛查看">二验</th>
+<th class="hide-s">代理</th><th class="hide-s">取码</th><th class="hide-s">标签</th>
+<th class="hide-s" title="登录满设定时长后自动踢出其它设备">清设备</th><th>操作</th>
+</tr></thead>
+<tbody id="tb"></tbody>
+</table>
+</div>
+</div>
+
+<div class="card pane" data-widget="logText" data-view="logs">
+<h3>操作日志 · 中文摘要 <span class="muted" id="logHint">最近 20 条</span>
+<span class="sp" style="flex:1"></span>
+<span class="muted" id="logPin" style="display:none;font-size:12px">已锁定操作结果</span>
+<button class="sm fit" data-onclick="unpinLog()">恢复自动日志</button></h3>
+<pre id="log">—</pre>
+</div>
+
+<div class="card pane" data-widget="tasks" data-view="tasks">
+<h3>任务中心 <span class="muted" id="taskHint">暂无任务</span>
+<span class="sp" style="flex:1"></span>
+<button class="sm fit write" data-onclick="newCollectTask()" title="按最近活跃情况采集群组发言人">采集发言人</button>
+<button class="sm fit write" data-onclick="newMessageTask()" title="支持富文本与可点击超链接">新建群发</button>
+<button class="sm fit" data-onclick="loadTasks(true)">刷新</button></h3>
+<div class="scroll" id="taskList"><span class="muted">还没有任务。可以先采集发言人，再对采集结果群发。</span></div>
+</div>
+
+<div class="card pane" data-widget="leads" data-view="leads">
+<h3>线索库 <span class="muted" id="leadHint"></span>
+<span class="sp" style="flex:1"></span>
+<button class="sm fit" data-onclick="exportLeads()">导出 CSV</button>
+<button class="sm fit" data-onclick="loadLeads()">刷新</button></h3>
+<div class="scroll" id="leadList"><span class="muted">还没有采集到线索。</span></div>
+</div>
+
+<div class="card pane" data-widget="logJson" data-view="logs">
+<h3>操作日志 · 原始数据（JSON）</h3>
+<pre id="logRaw">—</pre>
+</div>
+
+
+<div class="card pane" data-widget="connect" data-view="settings">
+<h3>连接与系统 <span class="muted">令牌、自动刷新、体检与服务控制</span></h3>
+<div class="conn-row">
+<input id="token" type="password" autocomplete="off" placeholder="访问令牌（免令牌模式留空）" aria-label="访问令牌" />
+<label class="muted"><input type="checkbox" id="auto" /> 自动刷新（每 10 秒）</label>
+</div>
+<div class="sys-grid">
+<button type="button" data-onclick="runDoctor()" title="一键校验环境/依赖/密钥/数据库/tdata，能修的自动修"><svg class="i"><use href="#i-pulse"/></svg>一键体检</button>
+<button type="button" data-onclick="openErrorLog()" title="服务端与前端错误日志，可导出上报"><svg class="i"><use href="#i-alert"/></svg>错误日志</button>
+<button type="button" class="write" data-onclick="hotReload()" title="真实重启后端进程（热重载），进行中的任务会中断"><svg class="i"><use href="#i-refresh"/></svg>热重载</button>
+<button type="button" class="danger" data-onclick="shutdownService()" title="关闭后端服务，不会自动重启"><svg class="i"><use href="#i-power"/></svg>关闭项目</button>
+</div>
+</div>
+<div class="card pane" data-widget="settings" data-view="settings">
+<h3>参数面板 <span class="muted" id="setHint"></span>
+<span class="sp" style="flex:1"></span>
+<button class="sm fit write" data-onclick="saveSettings()" title="只提交改动过的项">保存修改</button>
+<button class="sm fit write" data-onclick="resetSettings()" title="把所有参数恢复默认值（密钥不动）">恢复默认</button>
+<button class="sm fit" data-onclick="loadSettings(true)">刷新（放弃草稿）</button></h3>
+<div class="scroll" id="setBody"><span class="muted">加载中…</span></div>
+</div>
+
+<div class="card pane" data-widget="toolbox" data-view="toolbox">
+<h3>工具箱 <span class="muted" id="tbHint">按任务选择，默认配置即可开始</span>
+<span class="sp" style="flex:1"></span>
+<button class="sm fit" data-onclick="loadOps()">刷新</button></h3>
+<div class="tb-launchers" role="group" aria-label="常用任务">
+<button type="button" data-onclick="tbChooseGroup('check');toolboxJump('toolbox')">账号检测<small>状态 · 限制 · 二验</small></button>
+<button type="button" class="write" data-onclick="bulk('auto')">登录与接码<small>选好账号后进入设置</small></button>
+<button type="button" data-onclick="document.getElementById('tbProxyActions').hidden=!document.getElementById('tbProxyActions').hidden">代理管理<small>导入 · 体检 · 更换</small></button>
+<button type="button" data-onclick="toolboxJump('ziptools')">文件转换<small>Session / TData · ZIP</small></button>
+</div>
+<div id="tbProxyActions" hidden>
+<p class="muted">导入时填写节点池和容量；体检与更换作用于当前所选账号。</p>
+<div class="tb-categories">
+<button type="button" class="fit write" data-onclick="openModal('mImport')">导入账号与代理</button>
+<button type="button" class="fit" data-onclick="proxyAudit()">检测所选账号代理</button>
+<button type="button" class="fit write" data-onclick="bulkReplaceProxy()">更换所选账号代理</button>
+</div>
+</div>
+<div class="scroll" id="tbBody"><span class="muted">加载中…</span></div>
+</div>
+
+<div class="card pane" data-widget="ziptools" data-view="toolbox">
+<h3>文件转换 <span class="muted">选好工具，上传文件，下载结果</span>
+<span class="sp" style="flex:1"></span>
+<button class="sm fit" data-onclick="renderZt()">刷新</button></h3>
+<div class="scroll" id="ztBody"><span class="muted">加载中…</span></div>
+</div>
+
+<script>let SET_ORIG={},SET_SPECS={},SET_DIRTY=!1,SET_LOAD_P=null;function setInputId(e){return"set_"+e}function setFieldHtml(e){const t=setInputId(e.key),s=esc(e.desc||""),n="function"==typeof settingAliasText?settingAliasText(e.key):"",i=esc([e.key,e.desc,n].filter(Boolean).join(" ")),a=e.restart_required?' <span class="muted" title="这项启动时就读进去了，改完要重启才生效">↺</span>':"";let r;if("bool"===e.type){r=`<input type="checkbox" id="${t}"${"1"===String(e.value)?" checked":""} />`}else if(0===e.type.indexOf("choice:")){r=`<select id="${t}">${e.type.split(":")[1].split(",").map(t=>`<option value="${esc(t)}"${t===e.value?" selected":""}>${esc(t)}</option>`).join("")}</select>`}else{const s="int"===e.type||"float"===e.type?' inputmode="decimal"':"";r=`<input id="${t}" value="${esc(e.value)}" placeholder="${esc(e.default)}"${s} />`}return`<div class="row" data-kw="${i}">\n      <code>${esc(e.key)}${a}</code>\n      ${r}\n      <span class="muted">${s}</span>\n    </div>`}async function loadSettings(e=!1){if(SET_DIRTY&&!e)return;if(SET_LOAD_P)return SET_LOAD_P;const t=(async()=>{const t=$("#setBody");try{const s=await api("/api/settings");if(SET_DIRTY&&!e)return;SET_ORIG={},SET_SPECS={};let n="";for(const[e,t]of Object.entries(s.groups||{})){n+=`<h4>${esc(e)}</h4>`;for(const s of t)SET_ORIG[s.key]=String(s.value),SET_SPECS[s.key]=Object.assign({},s,{group:e}),n+=setFieldHtml(s)}if(s.secrets&&s.secrets.length){n+='<h4>密钥</h4><div class="muted fx-set-secret-hint">为安全起见不回显明文。留空=不改动，填了才会覆盖。</div>';for(const e of s.secrets){const t="function"==typeof settingAliasText?settingAliasText(e.key):"";n+=`<div class="row" data-kw="${esc([e.key,"密钥",t].filter(Boolean).join(" "))}">\n              <code>${esc(e.key)}</code>\n              <input id="${setInputId(e.key)}" type="password" placeholder="${e.set?"已设置，留空不改":"未设置"}"\n                     />\n              <span class="muted">${e.set?"✓ 已设置":"— 未设置"}</span>\n            </div>`,SET_SPECS[e.key]={key:e.key,type:"secret",group:"密钥",set:!!e.set}}}t.innerHTML=n||'<span class="muted">没有可调参数。</span>',$("#setHint").textContent=s.env_path?"写入 "+s.env_path:"",SET_DIRTY=!1,t&&!t.dataset.dirtyBound&&(t.dataset.dirtyBound="1",t.addEventListener("input",()=>{SET_DIRTY=!0}),t.addEventListener("change",()=>{SET_DIRTY=!0})),"function"==typeof applySettingsFilter&&applySettingsFilter()}catch(e){t.innerHTML=`<span class="muted">读取失败：${esc(e.message)}</span>`}})();let s;return s=t.finally(()=>{SET_LOAD_P===s&&(SET_LOAD_P=null)}),SET_LOAD_P=s,s}function setReadInput(e){const t=$("#"+setInputId(e));return t?"checkbox"===t.type?t.checked?"1":"0":t.value:null}async function saveSettings(){const e={};for(const t of Object.keys(SET_SPECS)){const s=setReadInput(t);null!==s&&("secret"!==SET_SPECS[t].type?s!==SET_ORIG[t]&&(e[t]=s):s.trim()&&(e[t]=s.trim()))}if(Object.keys(e).length)try{const t=await api("/api/settings",{method:"POST",body:JSON.stringify({values:e})});let s=`已保存 ${t.saved} 项。`;t.restart_required&&t.restart_required.length?s+=`其中 ${t.restart_required.length} 项要重启后生效：`+t.restart_required.join("、"):s+="已立即生效。",toast(s),SET_DIRTY=!1,loadSettings(!0)}catch(e){toast("保存失败："+e.message)}else toast("没有改动。")}async function resetSettings(){if(await uiConfirm({title:"恢复默认参数",message:"把所有参数恢复默认值？（密钥不会被改动）",danger:!0}))try{const e=await api("/api/settings/reset",{method:"POST",body:JSON.stringify({})});toast(`已恢复 ${e.reset} 项默认值。`+(e.restart_required&&e.restart_required.length?`其中 ${e.restart_required.length} 项需重启。`:"")),SET_DIRTY=!1,loadSettings(!0)}catch(e){toast("恢复失败："+e.message)}}
+</script>
+</div>
+</main>
+</div>
+
+<nav class="tabbar" aria-label="底部导航">
+<button type="button" class="nav-item active" data-nav="accounts" data-onclick="switchView('accounts')"><svg class="i"><use href="#i-accounts"/></svg>账号</button>
+<button type="button" class="nav-item" data-nav="tasks" data-onclick="switchView('tasks')"><svg class="i"><use href="#i-tasks"/></svg>任务</button>
+<button type="button" class="nav-item" data-nav="leads" data-onclick="switchView('leads')"><svg class="i"><use href="#i-leads"/></svg>线索</button>
+<button type="button" class="nav-item" data-nav="toolbox" data-onclick="switchView('toolbox')"><svg class="i"><use href="#i-tools"/></svg>工具</button>
+<button type="button" class="nav-item" data-nav-group="more" data-onclick="toggleMenu(this,'moreMenu')" aria-haspopup="menu" aria-expanded="false"><svg class="i"><use href="#i-more"/></svg>更多</button>
+</nav>
+
+
+<div class="menu-scrim" id="menuScrim" data-onclick="closeMenus()"></div>
+
+<div class="menu" id="moreMenu" role="menu">
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();switchView('logs')"><svg class="i"><use href="#i-file"/></svg>操作日志</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();switchView('settings')"><svg class="i"><use href="#i-sliders"/></svg>设置</button>
+<div class="menu-sep"></div>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();openAiPanel()"><svg class="i"><use href="#i-spark"/></svg>AI 助手</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();openHelp()"><svg class="i"><use href="#i-help"/></svg>使用帮助</button>
+<button type="button" class="menu-item mobile-only" role="menuitem" data-onclick="closeMenus();openPalette()"><svg class="i"><use href="#i-search"/></svg>搜索账号或操作</button>
+</div>
+
+<div class="menu" id="statusMenu" role="menu">
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();runDoctor()"><svg class="i"><use href="#i-pulse"/></svg>一键体检<small>环境 · 依赖 · 密钥</small></button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();refresh()"><svg class="i"><use href="#i-refresh"/></svg>刷新数据</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();switchView('settings')"><svg class="i"><use href="#i-key"/></svg>连接与令牌</button>
+</div>
+
+<div class="menu" id="addMenu" role="menu">
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();openModal('mAdd')"><svg class="i"><use href="#i-user-plus"/></svg>添加单个账号</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();openModal('mImport')"><svg class="i"><use href="#i-upload"/></svg>批量导入手机号清单</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();openModal('mSession')"><svg class="i"><use href="#i-file"/></svg>导入 session</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();openModal('mTdata')"><svg class="i"><use href="#i-upload"/></svg>导入 tdata</button>
+<div class="menu-sep"></div>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();oneStopHistory().catch(e=>toast(e.message,'err'))"><svg class="i"><use href="#i-history"/></svg>一条龙记录 / 继续 / 导出</button>
+</div>
+
+<div class="menu filter-pop" id="filterPop" role="dialog" aria-label="快速筛选">
+<div class="menu-title">快速筛选</div>
+<div class="quick-filters" id="qfilters" role="group" aria-label="快捷筛选"></div>
+<div class="menu-sep"></div>
+<button type="button" class="menu-item" data-onclick="closeMenus();selectTwofaSuccess()" title="清除旧勾选，仅选择当前搜索范围内最新改密成功的账号"><svg class="i"><use href="#i-check"/></svg>只选改密成功<small>清除旧勾选</small></button>
+<button type="button" class="menu-item" data-onclick="closeMenus();clearFilters()"><svg class="i"><use href="#i-x"/></svg>清除全部筛选</button>
+</div>
+
+<div class="menu bulk-menu" id="bulkMenu" role="menu">
+<div class="mobile-only"><div class="menu-title">常用</div>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();openModal('mSend')"><svg class="i"><use href="#i-send"/></svg>发消息</button>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkTag()"><svg class="i"><use href="#i-tag"/></svg>打标签</button>
+<div class="menu-sep"></div></div>
+<div class="menu-title">登录</div>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkRegen()"><svg class="i"><use href="#i-refresh"/></svg>重生会话</button>
+<div class="menu-title">代理与余额</div>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();proxyAudit()"><svg class="i"><use href="#i-globe"/></svg>代理体检</button>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkReplaceProxy()"><svg class="i"><use href="#i-globe"/></svg>更换代理</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();bulkOkpay()"><svg class="i"><use href="#i-wallet"/></svg>OKPay 余额</button>
+<div class="menu-title">导出</div>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkExport('pack')"><svg class="i"><use href="#i-download"/></svg>导出号包</button>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkExport('session')"><svg class="i"><use href="#i-download"/></svg>导出 .session</button>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkExportCodeLinks()" title="仅导出手机号和原始取码链接"><svg class="i"><use href="#i-download"/></svg>导出取码链接</button>
+<div class="menu-title">维护</div>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkWarmup()"><svg class="i"><use href="#i-flame"/></svg>养号</button>
+<button type="button" class="menu-item write" role="menuitem" data-onclick="closeMenus();bulkTerminate()"><svg class="i"><use href="#i-phone"/></svg>踢出其它设备</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();bulkLock(true)"><svg class="i"><use href="#i-lock"/></svg>批量锁定</button>
+<button type="button" class="menu-item" role="menuitem" data-onclick="closeMenus();bulkLock(false)"><svg class="i"><use href="#i-unlock"/></svg>批量解锁</button>
+<div class="menu-danger">
+<div class="menu-title">危险操作</div>
+<button type="button" class="menu-item danger write" role="menuitem" data-onclick="closeMenus();bulk('relogin')"><svg class="i"><use href="#i-logout"/></svg>退出并重登</button>
+<button type="button" class="menu-item danger write" role="menuitem" data-onclick="closeMenus();bulkDelete()"><svg class="i"><use href="#i-trash"/></svg>删除本地</button>
+<button type="button" class="menu-item danger write" role="menuitem" data-onclick="closeMenus();bulkDeleteTelegram()"><svg class="i"><use href="#i-trash"/></svg>注销 TG 账号</button>
+</div>
+</div>
+
+<div class="bulk" id="bulk" aria-label="批量操作">
+<div class="bulk-selection" id="bulkSelectionSummary"><b id="selN">已选 0 个</b><button type="button" class="sm" data-onclick="clearSel()">取消</button></div>
+<button type="button" class="fit" data-onclick="bulk('check')"><svg class="i"><use href="#i-pulse"/></svg>健康检查</button>
+<button type="button" class="fit write" data-onclick="bulk('auto')"><svg class="i"><use href="#i-key"/></svg>自动登录</button>
+<button type="button" class="fit write bulk-secondary" data-onclick="openModal('mSend')"><svg class="i"><use href="#i-send"/></svg>发消息</button>
+<button type="button" class="fit write bulk-secondary" data-onclick="bulkTag()"><svg class="i"><use href="#i-tag"/></svg>打标签</button>
+<button type="button" class="fit bulk-more" data-onclick="toggleMenu(this,'bulkMenu')" aria-haspopup="menu" aria-expanded="false">更多<svg class="i sm"><use href="#i-chevron-up"/></svg></button>
+</div>
+
+<div class="pal-backdrop" id="palBackdrop" data-onclick="closePalette()"></div>
+<div class="pal" id="pal" aria-hidden="true" role="dialog" aria-modal="true" aria-label="搜索账号或操作">
+<div class="pal-input"><svg class="i"><use href="#i-search"/></svg><input id="palInput" placeholder="搜索账号或操作，例如「代理」「导出」「+86」" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="palList" aria-expanded="false" /><kbd>Esc</kbd></div>
+<div class="pal-list" id="palList" role="listbox"></div>
+<div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd>选择</span><span><kbd>Enter</kbd>执行</span><span><kbd>Esc</kbd>关闭</span></div>
+</div>
+
+
+
+<div class="modal help" id="mHelp" role="dialog" aria-modal="true" data-fx-logo="1">
+<h3>使用帮助 · 功能说明</h3>
+<div class="body">
+<div class="help-wrap">
+<nav class="help-nav">
+<a href="#h-overview" data-onclick="return helpJump(this)" class="on">概览</a>
+<a href="#h-start" data-onclick="return helpJump(this)">快速开始</a>
+<a href="#h-accounts" data-onclick="return helpJump(this)">账号管理</a>
+<a href="#h-import" data-onclick="return helpJump(this)">导入</a>
+<a href="#h-export" data-onclick="return helpJump(this)">导出</a>
+<a href="#h-regen" data-onclick="return helpJump(this)">重生会话</a>
+<a href="#h-qrlogin" data-onclick="return helpJump(this)">扫码登录</a>
+<a href="#h-autologin" data-onclick="return helpJump(this)">自动登录</a>
+<a href="#h-kick" data-onclick="return helpJump(this)">清设备 / OKPay</a>
+<a href="#h-tasks" data-onclick="return helpJump(this)">任务与线索</a>
+<a href="#h-2fa" data-onclick="return helpJump(this)">二验与重置</a>
+<a href="#h-tools" data-onclick="return helpJump(this)">工具箱</a>
+<a href="#h-zip" data-onclick="return helpJump(this)">ZIP 工具</a>
+<a href="#h-system" data-onclick="return helpJump(this)">热重载与日志</a>
+<a href="#h-ai" data-onclick="return helpJump(this)">AI 助手</a>
+<a href="#h-settings" data-onclick="return helpJump(this)">参数与布局</a>
+<a href="#h-bot" data-onclick="return helpJump(this)">网页与机器人</a>
+<a href="#h-security" data-onclick="return helpJump(this)">安全注意</a>
+</nav>
+<div class="help-main">
+<h4 id="h-overview">概览</h4>
+<p>本工具是<strong>自托管</strong>的 Telegram 多账号管理器：会话加密存本地 SQLite，可通过<strong>网页</strong>或<strong>机器人</strong>操作。适合批量导入、健康检查、清设备、群发、线索采集、号包 ZIP 工具等。</p>
+<div class="tip">右上角「访问令牌」：若配置了 <code>TAM_WEB_TOKEN</code> 在此填入；本机免令牌模式可留空。顶栏还有<strong>一键体检</strong>、<strong>热重载</strong>、<strong>错误日志</strong>。</div>
+
+<h4 id="h-start">快速开始</h4>
+<ul>
+<li>双击 <code>start.bat</code>（Windows）或运行 <code>./start.sh</code>，选择本机/服务器、网页/机器人/两者。</li>
+<li>Windows「无法验证发布者」属未签名脚本提示，点<strong>运行</strong>即可；或先运行 <code>unblock.bat</code> / 属性里「解除锁定」。</li>
+<li>浏览器打开提示地址（本机默认 <code>http://127.0.0.1:8848</code>）。</li>
+<li>先点「一键体检」，再导入账号。</li>
+</ul>
+
+<h4 id="h-accounts">账号管理</h4>
+<ul>
+<li><strong>添加账号</strong>：别名、手机号、代理、标签、取码链接等。</li>
+<li><strong>勾选 + 批量栏</strong>：健康检查、自动登录、发消息、养号、代理体检、OKPay 余额、踢设备、打标签、导出、重生会话、删除等。</li>
+<li><strong>点开一行</strong>：资料、健康检查、限制检测、设备/会话、登录、清设备、导出、重生、二验状态/重置、退出、删除。</li>
+<li>状态：active 正常、restricted 受限、banned 封禁、unauthorized 未登录/失效等。</li>
+<li>批量操作有<strong>真实进度</strong>（完成数/成功/失败/当前号）；并行与超时见参数面板。</li>
+</ul>
+
+<h4 id="h-import">导入</h4>
+<table>
+<tr><th>入口</th><th>说明</th></tr>
+<tr><td>批量导入</td><td>每行 <code>手机号|取码链接</code>，可试运行。</td></tr>
+<tr><td>session 导入</td><td>上传 <code>.session</code> / zip，或服务端路径，或 StringSession 文本。</td></tr>
+<tr><td>tdata 导入</td><td>上传含 tdata 的 zip 或填路径；<strong>内置解析，无需 opentele</strong>。</td></tr>
+</table>
+<div class="tip">导入使用 NDJSON 流式进度，弹窗会显示当前序号/总数，不再是卡住的假进度条。同一 <code>user_id</code> 会合并到已有记录。</div>
+
+<h4 id="h-export">导出</h4>
+<ul>
+<li><strong>StringSession</strong> / <strong>.session</strong> / <strong>号包 zip</strong>（session+json）。</li>
+<li><strong>tdata</strong>：真 Desktop 目录结构（需服务器安装 <code>opentele</code>）。缺失时弹窗可<strong>一键安装</strong>。</li>
+</ul>
+<p>导出只转换库内已有会话，不会新开授权。凭证等同登录权，勿外泄。</p>
+
+<h4 id="h-regen">重生会话（网页防找回）</h4>
+<p>与机器人「防找回」同类：新设备指纹重新登录，旧 session 尝试注销，库内换成新会话并重置接管时间。</p>
+<ul>
+<li>需要手机号；有 2FA 须填密码（已保存在本工具的二验会自动使用；批量可统一密码）。</li>
+<li>成功后再导出；tdata 不会在重生时自动生成。</li>
+<li><strong>限流：</strong>短时间多次重生或多次错 2FA，Telegram 会返回 <code>PhonePasswordFlood</code>（登录次数过多）。需等待数小时～24 小时，期间不要反复点重生。</li>
+</ul>
+
+<h4 id="h-qrlogin">扫码登录</h4>
+<p>账号详情里点「扫码登录」：网页显示二维码，用手机已登录的官方 Telegram 扫描授权，会话加密入库。无需短信验证码；若开启云密码，扫码后需再填一次。</p>
+<ul>
+<li>适合无取码链接、或想快速接管已在手机上的号。</li>
+<li>二维码约 30 秒过期，页面会提示刷新；不要多开重复发起以免限流。</li>
+</ul>
+
+<h4 id="h-autologin">自动登录</h4>
+<p>依赖账号上的<strong>取码链接</strong>。无链接时请手动登录、扫码登录，或直接导入 session/tdata。</p>
+
+<h4 id="h-kick">清设备 / OKPay</h4>
+<ul>
+<li>自动清设备：按「本机接管时间」起算；详情可设是否参与、周期、循环。</li>
+<li>踢其它设备会校验是否踢干净，失败按重试间隔再试。</li>
+<li>OKPay 余额：对已登录号查询（需对应业务配置）。</li>
+</ul>
+
+<h4 id="h-tasks">任务与线索</h4>
+<p>群发、采集最近发言人等走任务中心；可看进度、停止。线索库可筛选后再用于群发。</p>
+
+<h4 id="h-2fa">二验与重置</h4>
+<ul>
+<li><strong>改二步验证</strong>：工具箱 / 详情，可选把新密码加密存库。</li>
+<li><strong>二验状态</strong>：是否开启 2FA、<strong>是否绑定辅助邮箱</strong>、是否处于重置等待期。</li>
+<li><strong>发起 2FA 重置</strong>：走官方流程，通常约 7 天等待；到期后云密码失效。有辅助邮箱时原持有人仍可能用邮箱恢复——重置前请先查状态。</li>
+<li><strong>取消 2FA 重置</strong>：取消进行中的等待。</li>
+<li>支持单号与多选批量。</li>
+</ul>
+
+<h4 id="h-tools">工具箱</h4>
+<p>对<strong>库内已选账号</strong>批量执行：筛活、限制检测、隐私、筛料、改二验、二验状态/重置、清通讯录/会话、防找回清理、<strong>屏蔽/取消屏蔽用户</strong>、搜索公开群、加群、成员列表、读群消息、踢设备等。危险项会确认。</p>
+
+<h4 id="h-zip">ZIP 工具（不碰库内号）</h4>
+<ul>
+<li><strong>拆包 / 合并 / 注册时间分类 / 转 API</strong>：与机器人号包能力对齐。</li>
+<li><strong>格式互转</strong>：Session→Tdata（需 opentele）或 Tdata→Session（内置解析）。</li>
+<li><strong>Passkey</strong>：上传 session 号包，初始化 Passkey 注册并下载凭证 zip（创建方向）。</li>
+</ul>
+<p>结果请下载后点「用完删除」。号包类移植自 GAFBot（MIT），见 <code>NOTICE.GAFBot</code>。</p>
+
+<h4 id="h-system">热重载与错误日志</h4>
+<ul>
+<li><strong>热重载</strong>：真实重启后端进程（<code>os.execv</code>），不是刷新页面。进行中任务会中断；约 1–3 秒后前端自动探测恢复。</li>
+<li><strong>错误日志</strong>：记录服务端未捕获异常、HTTP 5xx、前端脚本错误。可列表查看、导出 JSON 上报、清空。</li>
+<li>文件副本：数据目录下 <code>errors.log</code>（DB 异常时仍可留痕）。</li>
+</ul>
+
+<h4 id="h-settings">参数与布局</h4>
+<ul>
+<li><code>TAM_BATCH_CONCURRENCY</code>：批量并行（1–32）。</li>
+<li><code>TAM_REGEN_CONCURRENCY</code>：重生并行（1–8）。</li>
+<li><code>TAM_UI_OP_TIMEOUT</code>：单号超时秒数，超时跳过避免卡死。</li>
+</ul>
+
+<h4 id="h-bot">网页与机器人</h4>
+<p><code>TAM_FRONTEND=both</code> 时同一进程开网页+机器人，共享 <code>.env</code> 与数据目录，但<strong>账号库只由网页/API 使用</strong>。机器人默认处理临时号包 ZIP，不自动写入托管表。Passkey/格式互转等号包能力两边均有入口；踢设备、登录、任务中心以网页为准。</p>
+
+<h4 id="h-ai">AI 助手</h4>
+<p>右下角 ✦ 或顶栏「AI 助手」打开侧栏。配置上游（OpenAI 兼容 / Claude / Gemini / Azure）与 Key 后，勾选<strong>启用 AI 助手</strong>并点「保存配置」才会生效；关闭启用开关后同样要点保存，否则不生效。权限可用预设（只读/安全/标准/完整）点「套用预设到勾选」，或<strong>逐项勾选工具</strong>。升级后新增工具会按当前预设自动补默认开关。标准预设不含注销账号/退出登录；完整预设才包含。登录与导入导出 session 永不对 AI 开放。</p>
+
+<h4 id="h-security">安全注意</h4>
+<ul>
+<li>主密钥加密会话；备份 <code>.env</code> / 主密钥，丢失无法解密旧会话。</li>
+<li>导出、重生、转 API 产物等同登录凭证，勿公开传播。</li>
+<li>服务器请用强令牌并建议 HTTPS；默认本机 127.0.0.1。</li>
+<li>只读/Agent 令牌不能做导入登录等写操作；热重载在只读模式下禁用。</li>
+</ul>
+</div>
+</div>
+</div>
+<div class="foot">
+<button class="primary" data-onclick="closeAll()">关闭</button>
+</div>
+</div>
+
+
+
+<div class="modal" id="mUi" role="dialog" aria-modal="true">
+<h3 id="uiTitle" style="padding:16px 16px 0;margin:0">提示</h3>
+<div class="ui-body">
+<p class="ui-msg" id="uiMsg"></p>
+<div id="uiInputWrap" style="display:none">
+<label class="f"><span id="uiInputLabel">输入</span>
+<input id="uiInput" autocomplete="off" /></label>
+</div>
+<div id="uiProgWrap" class="ui-prog" style="display:none">
+<div class="bar"><i id="uiProgBar"></i></div>
+<div class="ui-prog-text" id="uiProgText">—</div>
+</div>
+</div>
+<div class="ui-actions" id="uiActions">
+<button type="button" id="uiCancel" data-onclick="uiResolve(false)">取消</button>
+<button type="button" class="primary" id="uiOk" data-onclick="uiResolve(true)">确定</button>
+</div>
+</div>
+
+
+<button type="button" class="ai-fab write" id="aiFab" title="AI 助手（可拖动）" aria-label="打开 AI 助手" aria-controls="aiPanel" aria-expanded="false">✦</button>
+<div class="ai-panel" id="aiPanel" role="dialog" aria-modal="true" aria-labelledby="aiPanelTitle" aria-hidden="true">
+<div class="ai-resize" id="aiResize" title="拖动调节宽度"></div>
+<header>
+<h2 id="aiPanelTitle">AI 助手</h2>
+<span class="pill" id="aiStatus">未启用</span>
+<span class="sp"></span>
+<button class="sm fit" data-onclick="aiClearHistory()" title="清空当前对话与本地历史">清空对话</button>
+<button class="sm fit" data-onclick="closeAiPanel()">关闭</button>
+</header>
+<div class="ai-tabs">
+<button type="button" class="on" id="aiTabChat" data-onclick="aiShowTab('chat')">对话</button>
+<button type="button" id="aiTabCfg" data-onclick="aiShowTab('cfg')">配置与权限</button>
+</div>
+<div class="ai-body">
+<div class="ai-pane on" id="aiPaneChat">
+<div class="ai-msgs" id="aiMsgs">
+<div class="ai-row sys"><div class="ai-bubble sys">在「配置与权限」中选择上游格式、填写接口与 Key，设置权限后启用。支持 Markdown 表格与代码块展示。</div></div>
+</div>
+<div class="ai-compose">
+<textarea id="aiInput" placeholder="输入问题，例如：列出所有 active 账号" rows="2"></textarea>
+<button class="primary write" id="aiSendBtn" data-onclick="aiSend()">发送</button>
+</div>
+</div>
+<div class="ai-pane" id="aiPaneCfg">
+<div class="ai-cfg" id="aiCfgForm">加载中…</div>
+</div>
+</div>
+</div>
+
+<div class="backdrop" id="bd" data-onclick="closeAll()"></div>
+
+
+<aside class="drawer" id="accountDetailDrawer" role="dialog" aria-modal="true" aria-labelledby="dTitle" aria-hidden="true">
+<header><h1 id="dTitle">账号详情</h1><span class="sp"></span><button class="sm fit" data-onclick="closeAll()">关闭</button></header>
+<div class="body" id="dBody"></div>
+</aside>
+
+
+<div class="modal" id="mAdd" role="dialog" aria-modal="true">
+<h3>添加账号</h3>
+<div class="body">
+<label class="f"><span>别名</span><input id="aLabel" placeholder="主号" /></label>
+<label class="f"><span>手机号</span><input id="aPhone" placeholder="+8613800138000" /></label>
+<label class="f"><span>取码链接（可选）</span><input id="aCode" placeholder="https://tgapi.example.com/@user/uuid/GetHTML" /></label>
+<div class="row" style="gap:8px;margin:-6px 0 12px;align-items:center">
+<button type="button" class="sm fit" id="aCodeTest" data-onclick="testCodeSource('aCode','aProxy','aCodeStatus')">测试取码链接</button>
+<span class="muted" id="aCodeStatus">只读测试，不发送 Telegram 验证码</span>
+</div>
+<label class="f"><span>代理（可选，强烈建议一号一代理）</span><input id="aProxy" placeholder="socks5://user:pass@host:1080" /></label>
+<label class="f"><span>标签（逗号分隔）</span><input id="aTags" placeholder="batch1,us" /></label>
+</div>
+<div class="foot"><button data-onclick="closeAll()">取消</button><button class="primary" data-onclick="addAccount()">添加</button></div>
+</div>
+
+
+
+<div class="modal" id="mErrors" role="dialog" aria-modal="true">
+<h3>错误日志</h3>
+<div class="body">
+<p class="muted">记录服务端未捕获异常、HTTP 5xx 与前端上报。可导出 JSON 发给维护者。</p>
+<div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+<button class="sm" data-onclick="loadErrorLog()">刷新</button>
+<button class="sm write" data-onclick="exportErrorLog()">导出报告</button>
+<button class="sm danger write" data-onclick="clearErrorLog()">清空</button>
+<span class="muted" id="errStats">—</span>
+</div>
+<pre id="errList" style="max-height:50vh;min-height:180px">加载中…</pre>
+</div>
+<div class="foot"><button data-onclick="closeAll()">关闭</button></div>
+</div>
+
+
+<div class="modal modal-wide" id="mImport" role="dialog" aria-modal="true">
+<h3>批量导入 · 手机号|取码链接</h3>
+<div class="body">
+<label class="f"><span>支持 手机号|取码链接、Markdown 表格、序号列及反引号；第三段备注作别名</span>
+<textarea id="iText" data-oninput="previewImport()" placeholder="+10000000000|https://example.invalid/code/primary/GetHTML"></textarea></label>
+<div class="row">
+<label class="f" style="flex:1 1 180px"><span>标签</span><input id="iTags" placeholder="batch1" /></label>
+<label class="f" style="flex:1 1 220px"><span>统一代理（可选）</span><input id="iProxy" placeholder="socks5://host:1080" /></label>
+</div>
+<label class="f"><span>代理节点池（每行一个，可选）</span><textarea id="iProxyPool" rows="3" placeholder="socks5://node-a:1080
+socks5://node-b:1080"></textarea></label>
+<label class="f"><span>代理 CSV（可选，上传后自动合并去重）</span><input id="iProxyCsv" type="file" accept=".csv,.txt" /></label>
+<label class="f" style="max-width:280px"><span>每节点分配数量（0=轮询）</span><input id="iLinksPerProxy" type="number" min="0" step="1" value="0" /></label>
+<div class="muted small" id="iCapacity" aria-live="polite">填写节点后显示全局已用/剩余容量</div>
+<div class="muted" id="iPrev">解析预览：等待输入</div>
+<div class="row" style="gap:8px;margin-top:10px;align-items:center">
+<button type="button" class="sm fit" id="iCodeTest" data-onclick="testFirstImportedCodeSource()">测试第一条取码链接</button>
+<span class="muted" id="iCodeStatus">只读测试，不发送 Telegram 验证码</span>
+</div>
+</div>
+<div class="foot"><button data-onclick="closeAll()">取消</button>
+<button data-onclick="doImport(true)">试运行</button>
+<button class="primary" data-onclick="doImport(false)">导入</button></div>
+</div>
+
+
+<div class="modal modal-wide" id="mTdata" role="dialog" aria-modal="true">
+<h3>从 Telegram Desktop tdata 导入</h3>
+<div class="body">
+<p class="muted">解析由内置纯 Python 解析器完成，<strong>无需 opentele</strong>，兼容 TDesktop 6.x。上传请把整个 <code>tdata</code> 文件夹打成 zip。</p>
+<div class="row">
+<label class="row muted" style="gap:6px"><input type="radio" name="tdataMode" value="upload" checked data-onchange="toggleTdataMode()" style="width:16px;min-height:0" /> 上传 zip</label>
+<label class="row muted" style="gap:6px"><input type="radio" name="tdataMode" value="path" data-onchange="toggleTdataMode()" style="width:16px;min-height:0" /> 服务端路径</label>
+</div>
+<div id="tdataUploadBox">
+<label class="f"><span>选择含 tdata 的 zip（可多选）</span>
+<input type="file" id="tUpload" multiple accept=".zip,application/zip" /></label>
+<div class="muted" id="tUploadHint">尚未选择文件</div>
+</div>
+<div id="tdataPathBox" style="display:none">
+<label class="f"><span>服务端本地路径（tdata 目录，或号包父目录）</span>
+<input id="tPath" placeholder="/home/me/tdata 或 /path/to/号包父目录" /></label>
+<label class="row muted" style="gap:6px"><input type="checkbox" id="tScan" style="width:16px;min-height:0" /> 递归扫描子目录中的多份 tdata</label>
+</div>
+<div class="row">
+<label class="f" style="flex:1 1 180px"><span>别名（单目录时生效）</span><input id="tLabel" /></label>
+<label class="f" style="flex:1 1 180px"><span>本地密码 passcode（如有）</span><input id="tPass" type="password" /></label>
+</div>
+<div class="row">
+<label class="f" style="flex:1 1 180px"><span>标签</span><input id="tTags" placeholder="tdata" /></label>
+<label class="f" style="flex:1 1 220px"><span>代理</span><input id="tProxy" placeholder="socks5://host:1080" /></label>
+</div>
+<label class="row muted" style="gap:6px"><input type="checkbox" id="tDebug" style="width:16px;min-height:0" checked /> 调试模式：输出逐步骤诊断（导入失败时自动开启）</label>
+</div>
+<div class="foot"><button data-onclick="closeAll()">取消</button><button data-onclick="doTdataInspect()">先体检不导入</button><button class="primary" data-onclick="doTdata()">导入</button></div>
+</div>
+
+
+
+<div class="modal modal-wide" id="mSession" role="dialog" aria-modal="true">
+<h3>导入 session</h3>
+<div class="body">
+<p class="muted">三种方式：本机<strong>上传</strong> .session / zip、填<strong>服务端路径</strong>、或粘贴 <strong>StringSession</strong> 文本。导入后会联网验证并加密入库。</p>
+<div class="row">
+<label class="row muted" style="gap:6px"><input type="radio" name="sessMode" value="upload" checked data-onchange="toggleSessMode()" style="width:16px;min-height:0" /> 上传文件</label>
+<label class="row muted" style="gap:6px"><input type="radio" name="sessMode" value="file" data-onchange="toggleSessMode()" style="width:16px;min-height:0" /> 服务端路径</label>
+<label class="row muted" style="gap:6px"><input type="radio" name="sessMode" value="text" data-onchange="toggleSessMode()" style="width:16px;min-height:0" /> StringSession 文本</label>
+</div>
+<div id="sessUploadBox">
+<label class="f"><span>选择 .session 或含多个 session 的 zip（可多选）</span>
+<input type="file" id="sfUpload" multiple accept=".session,.zip,application/zip" /></label>
+<div class="muted" id="sfUploadHint">尚未选择文件</div>
+</div>
+<div id="sessFileBox" style="display:none">
+<label class="f"><span>服务端本地路径（文件或目录）</span><input id="sfPath" placeholder="/home/me/sessions 或 /path/to/acc.session" /></label>
+<label class="row muted" style="gap:6px"><input type="checkbox" id="sfScan" checked style="width:16px;min-height:0" /> 目录时递归扫描子目录</label>
+</div>
+<div id="sessTextBox" style="display:none">
+<label class="f"><span>每行一个 StringSession；可用 <code>别名|session</code></span>
+<textarea id="sfText" placeholder="1BVtsOK4Bu...&#10;主号|1AAQ...&#10;# 注释行会被忽略"></textarea></label>
+</div>
+<div class="row">
+<label class="f" style="flex:1 1 160px"><span>统一别名前缀（可选）</span><input id="sfLabel" placeholder="session" /></label>
+<label class="f" style="flex:1 1 160px"><span>标签</span><input id="sfTags" placeholder="session,batch" /></label>
+<label class="f" style="flex:1 1 200px"><span>统一代理（可选）</span><input id="sfProxy" placeholder="socks5://host:1080" /></label>
+</div>
+</div>
+<div class="foot"><button data-onclick="closeAll()">取消</button><button class="primary" data-onclick="doSessionImport()">导入</button></div>
+</div>
+
+
+<div class="modal" id="mLogin" role="dialog" aria-modal="true">
+<h3>登录账号 <span class="muted" id="lWho"></span></h3>
+<div class="body">
+<p class="muted" id="lHint">尚未发送验证码。请选择手动发码或自动接码登录。</p>
+<label class="f"><span>验证码</span><input id="lCode" inputmode="numeric" placeholder="5 位数字" /></label>
+<label class="f"><span>两步验证密码（如有）</span><input id="lPass" type="password" /></label>
+<label class="f"><span>发码后等待（秒）</span><input id="lQueryDelay" type="number" min="0" max="600" value="60" /></label>
+<label class="f"><span>查询间隔（秒）</span><input id="lPollInterval" type="number" min="1" max="600" value="60" /></label>
+<label class="row" style="gap:8px"><input id="lAdaptiveTiming" type="checkbox" checked /><span>智能调整等待（按成功/冷却结果优化）</span></label>
+</div>
+<div class="foot"><button data-onclick="closeAll()">取消</button>
+<button id="lSendBtn" data-onclick="resend()">发送验证码</button>
+<button id="lAutoBtn" class="write" data-onclick="autoLoginFromModal()">自动接码登录</button>
+<button class="primary" data-onclick="verify()">确认登录</button></div>
+</div>
+
+
+
+<div class="modal" id="mQrLogin" role="dialog" aria-modal="true">
+<h3>扫码登录</h3>
+<div class="body">
+<p class="muted" id="qrWho" style="margin:0 0 8px"></p>
+<p class="muted" style="margin:0 0 10px;font-size:12.5px;line-height:1.5">
+用手机 <strong>Telegram</strong>：设置 → 设备 → <strong>扫描二维码</strong>，或系统相机扫本页二维码。
+授权后本工具获得新会话（加密入库）。二维码约 30 秒有效，过期会自动刷新。
+</p>
+<div style="text-align:center;margin:12px 0">
+<img id="qrImg" alt="QR" />
+</div>
+<p class="muted" id="qrStatus" style="text-align:center;font-size:13px">准备中…</p>
+<label class="f" id="qrPassWrap" style="display:none;margin-top:10px">
+<span>两步验证密码</span>
+<input id="qrPass" type="password" placeholder="扫码后若提示需要云密码则填写" />
+</label>
+</div>
+<div class="row" style="justify-content:flex-end;gap:8px;padding:0 16px 14px">
+<button class="sm fit" type="button" data-onclick="qrLoginCancel()">取消</button>
+<button class="sm write" type="button" data-onclick="qrLoginRefresh()">刷新二维码</button>
+<button class="primary write" type="button" id="qrSubmitPass" style="display:none" data-onclick="qrLoginSubmitPass()">提交密码</button>
+</div>
+</div>
+
+
+<div class="modal" id="mSend" role="dialog" aria-modal="true">
+<h3>发送消息</h3>
+<div class="body">
+<label class="f"><span>接收方（@用户名 / 手机号 / chat id）</span><input id="sPeer" placeholder="@someone" /></label>
+<label class="f"><span>内容（支持变体语法 {你好|在吗}）</span><textarea id="sText" style="min-height:110px;font-family:inherit;font-size:14px" data-oninput="spinPreview()"></textarea></label>
+<div class="row" style="gap:8px;align-items:center">
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sSpin" checked style="width:16px;min-height:0" /> 启用变体</label>
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sHealthy" checked style="width:16px;min-height:0" /> 只发健康号</label>
+<span class="sp" style="flex:1"></span>
+<span class="muted" id="spinN">变体数 1</span>
+</div>
+<pre id="spinPrev" class="muted" style="white-space:pre-wrap;margin:8px 0 0"></pre>
+<p class="muted">批量发送会自动串行 + 随机间隔。请勿群发骚扰，账号极易被封。</p>
+</div>
+<div class="foot"><button data-onclick="closeAll()">取消</button><button class="primary" data-onclick="doSend()">发送</button></div>
+</div>
+
+<div class="modal modal-wide" id="mChats" role="dialog" aria-modal="true">
+<h3>采集最近发言人 · 选群</h3>
+<div class="body">
+<div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+<label class="f" style="flex:1;min-width:180px"><span>用哪个账号拉群</span>
+<select id="cAcc" data-onchange="loadChats()"></select></label>
+<label class="f" style="width:130px"><span>类型</span>
+<select id="cKind" data-onchange="loadChats()">
+<option value="group">群组</option>
+<option value="channel">频道</option>
+<option value="all">全部</option>
+</select></label>
+<button class="fit" data-onclick="loadChats(true)">重新拉取</button>
+</div>
+<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+<input id="cSearch" placeholder="搜群名 / @用户名" data-oninput="renderChats()" style="flex:1;min-width:160px" />
+<label style="display:flex;gap:6px;align-items:center" class="muted">
+<input type="checkbox" id="cActive" checked style="width:16px;min-height:0" data-onchange="renderChats()" /> 只看 7 天内有新消息的</label>
+<button class="sm fit" data-onclick="pickChats(true)">全选</button>
+<button class="sm fit" data-onclick="pickChats(false)">清空</button>
+</div>
+<div id="chatList" class="chatbox"><span class="muted">正在拉取群组…</span></div>
+<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+<label class="f" style="width:150px"><span>只要最近多少天发言的</span>
+<input id="cDays" type="number" value="7" min="1" max="90" /></label>
+<label class="f" style="width:150px"><span>每群最多采多少人</span>
+<input id="cLimit" type="number" value="300" min="10" max="2000" /></label>
+<label class="f" style="width:150px"><span>每群最多扫多少条消息</span>
+<input id="cScan" type="number" value="3000" min="200" max="20000" /></label>
+<label class="f" style="flex:1;min-width:160px"><span>给这批线索打标签（可空，逗号分隔）</span>
+<input id="cTags" placeholder="如：高活跃,币圈" /></label>
+</div>
+<div class="row" style="gap:12px;align-items:center;margin-top:8px">
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cSkipBot" checked style="width:16px;min-height:0" /> 跳过机器人</label>
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cSkipPrem" style="width:16px;min-height:0" /> 跳过 Premium 用户</label>
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cCapture" style="width:16px;min-height:0" data-onchange="$('#cTextLimit').disabled = !this.checked" /> 同时存对话记录</label>
+<label class="f"><span>每个群最多存多少条</span>
+<input id="cTextLimit" type="number" value="4000" min="100" max="50000" disabled /></label>
+<span class="sp" style="flex:1"></span>
+<span class="muted" id="cCount">已选 0 个群</span>
+</div>
+<p class="muted">采集只读历史消息，不会在群里留下任何痕迹；群越大扫得越久，建议先小范围试试。</p>
+</div>
+<div class="foot"><button data-onclick="closeAll()">取消</button>
+<button class="primary" data-onclick="startCollect()">开始采集</button></div>
+</div>
+
+<div class="modal" id="mOfficialCode" role="dialog" aria-modal="true">
+<h3>读取官方验证码 <span class="muted" id="officialCodeWho"></span></h3>
+<div class="body">
+<p>用于在手机或桌面 Telegram 客户端登录。这里只读取管理器中已登录账号收到的官方通知，不发码、不退出、不重新登录。</p>
+<p class="muted">请确认账号的「循环清设备」设置，避免实体客户端登录后被自动退出。</p>
+<p id="officialCodeStatus" role="status" aria-live="polite"></p>
+<div id="officialCodeValue" style="font-size:32px;letter-spacing:6px;user-select:all"></div>
+</div>
+<div class="foot">
+<button data-onclick="closeAll()">关闭</button>
+<button id="officialCodeCopy" data-onclick="copyOfficialCode()" disabled>复制验证码</button>
+<button id="officialCodeRead" class="primary" data-onclick="readOfficialCode()">读取 / 刷新</button>
+</div>
+</div>
+<div class="toasts" id="toasts"></div>
+
+<script src="/release/app.min.1dd19ba3.js" defer></script>
+</body>
+</html>

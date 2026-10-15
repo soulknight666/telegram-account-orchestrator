@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     status        TEXT DEFAULT 'new',        -- new|active|spam_block|spam_block_perm|frozen|unauthorized|restricted|banned|error
     status_note   TEXT,
     premium       INTEGER DEFAULT 0,         -- 是否 Telegram Premium
+    locked        INTEGER DEFAULT 0,         -- 本地保护锁，锁定后禁止删除
     has_2fa       INTEGER,                   -- 1有二验 0无 NULL未知
     twofa_enc     TEXT,                        -- 二验密码密文（改二验时可选保存）
     spam_until    REAL,                      -- 临时 spam 限制解除时间戳
@@ -41,9 +42,20 @@ CREATE TABLE IF NOT EXISTS accounts (
     last_kick_at  REAL,                      -- 上次成功清设备的时间
     kick_retry_at REAL,                      -- 清设备未成功时的下次重试时间
     last_check_at REAL,
+    last_check_result TEXT,
+    last_check_error TEXT,
     created_at    REAL NOT NULL,
     updated_at    REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_changes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    action     TEXT NOT NULL,
+    changed_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_account_changes_time
+    ON account_changes(changed_at, id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,6 +67,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log(account_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS twofa_results (
+    account_id INTEGER PRIMARY KEY,
+    attempt TEXT NOT NULL,
+    status TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL
+);
 
 -- 运行时可改的设置（比如清设备失败后的重试间隔），优先级高于 .env
 CREATE TABLE IF NOT EXISTS settings (
@@ -96,6 +116,7 @@ class Account:
     status: str = "new"
     status_note: str | None = None
     premium: int = 0
+    locked: int = 0
     has_2fa: int | None = None
     twofa_enc: str | None = None
     spam_until: float | None = None
@@ -108,6 +129,8 @@ class Account:
     last_kick_at: float | None = None
     kick_retry_at: float | None = None
     last_check_at: float | None = None
+    last_check_result: str | None = None
+    last_check_error: str | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -142,8 +165,10 @@ class Database:
         for name, ddl in (("code_url", "TEXT"), ("premium", "INTEGER DEFAULT 0"),
                           ("spam_until", "REAL"), ("last_warm_at", "REAL"),
                           ("auto_kick", "INTEGER DEFAULT 1"), ("auto_kick_hours", "REAL"), ("auto_kick_loop", "INTEGER DEFAULT 1"), ("login_at", "REAL"),
+                          ("locked", "INTEGER DEFAULT 0"),
                           ("last_kick_at", "REAL"), ("adopted_at", "REAL"),
-                          ("kick_retry_at", "REAL"), ("has_2fa", "INTEGER"), ("twofa_enc", "TEXT")):
+                          ("kick_retry_at", "REAL"), ("has_2fa", "INTEGER"), ("twofa_enc", "TEXT"),
+                          ("last_check_result", "TEXT"), ("last_check_error", "TEXT")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {ddl}")
         # 老库补 adopted_at：没有接管时间的，用已有的 login_at / created_at 当起点，
@@ -169,7 +194,28 @@ class Database:
         )
         self.conn.commit()
         acc.id = cur.lastrowid
+        self._record_change(acc.id, "upsert")
         return acc
+
+    def add_accounts_bulk(self, accounts: list[Account], chunk_size: int = 500) -> list[Account]:
+        """分块批量写入，减少万级导入事务次数。"""
+        if not accounts: return []
+        now = time.time()
+        sql = "INSERT INTO accounts (label,phone,proxy,code_url,device_model,app_version,system_version,lang_code,tags,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+        for start in range(0, len(accounts), max(1, chunk_size)):
+            chunk = accounts[start:start + max(1, chunk_size)]
+            for a in chunk:
+                a.created_at = a.created_at or now; a.updated_at = now
+            self.conn.executemany(sql, [(a.label,a.phone,a.proxy,a.code_url,a.device_model,a.app_version,a.system_version,a.lang_code,json.dumps(a.tags,ensure_ascii=False),a.status,a.created_at,a.updated_at) for a in chunk])
+            for a in chunk:
+                row = self.conn.execute("SELECT id FROM accounts WHERE label=?", (a.label,)).fetchone()
+                a.id = row[0] if row else None
+            self.conn.executemany(
+                "INSERT INTO account_changes(account_id, action, changed_at) VALUES (?,?,?)",
+                [(a.id, "upsert", time.time()) for a in chunk if a.id is not None],
+            )
+            self.conn.commit()
+        return accounts
 
     def update(self, account_id: int, **fields: Any) -> None:
         if not fields:
@@ -178,14 +224,48 @@ class Database:
             fields["tags"] = json.dumps(fields["tags"], ensure_ascii=False)
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k}=?" for k in fields)
-        self.conn.execute(
+        cur = self.conn.execute(
             f"UPDATE accounts SET {sets} WHERE id=?", (*fields.values(), account_id)
         )
+        if cur.rowcount:
+            self.conn.execute(
+                "INSERT INTO account_changes(account_id, action, changed_at) VALUES (?,?,?)",
+                (account_id, "upsert", time.time()),
+            )
         self.conn.commit()
 
     def delete(self, account_id: int) -> None:
-        self.conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+        cur = self.conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+        if cur.rowcount:
+            self.conn.execute(
+                "INSERT INTO account_changes(account_id, action, changed_at) VALUES (?,?,?)",
+                (account_id, "delete", time.time()),
+            )
         self.conn.commit()
+
+    def _record_change(self, account_id: int | None, action: str) -> None:
+        if account_id is None:
+            return
+        self.conn.execute(
+            "INSERT INTO account_changes(account_id, action, changed_at) VALUES (?,?,?)",
+            (int(account_id), action, time.time()),
+        )
+        self.conn.commit()
+
+    def changes_since(self, updated_since: float) -> dict[str, list[int]]:
+        """返回游标之后发生过变化的账号与已删除账号。"""
+        rows = self.conn.execute(
+            "SELECT account_id, action FROM account_changes "
+            "WHERE changed_at > ? ORDER BY changed_at, id",
+            (float(updated_since),),
+        ).fetchall()
+        changed: list[int] = []
+        deleted: list[int] = []
+        for row in rows:
+            target = changed if row["action"] != "delete" else deleted
+            if row["account_id"] not in target:
+                target.append(int(row["account_id"]))
+        return {"changed_ids": changed, "deleted_ids": deleted}
 
     def get(self, account_id: int) -> Account | None:
         row = self.conn.execute(
@@ -247,6 +327,58 @@ class Database:
                 (account_id, limit),
             )
         return [dict(r) for r in rows]
+
+    def begin_twofa_result(self, account_id: int) -> str:
+        import uuid
+        attempt = uuid.uuid4().hex
+        with self.conn:
+            self.conn.execute('INSERT INTO twofa_results VALUES (?,?,?,?,?) '
+                'ON CONFLICT(account_id) DO UPDATE SET attempt=excluded.attempt, '
+                'status=excluded.status,detail=excluded.detail,updated_at=excluded.updated_at',
+                (account_id, attempt, 'running', '正在修改2FA', time.time()))
+        return attempt
+
+    def finish_twofa_result(self, account_id: int, attempt: str, status: str, detail: str) -> None:
+        with self.conn:
+            self.conn.execute('UPDATE twofa_results SET status=?,detail=?,updated_at=? '
+                              'WHERE account_id=? AND attempt=?',
+                              (status, detail, time.time(), account_id, attempt))
+
+    def twofa_results(self) -> dict[int, dict[str, Any]]:
+        """Latest change outcome; no password/session/raw exception in public metadata.
+
+        Include historical one-stop checkpoints so existing batches can be filtered
+        without sending codes or changing passwords again.
+        """
+        out = {r['account_id']: {k:r[k] for k in ('status','detail','updated_at')}
+               for r in self.conn.execute('SELECT * FROM twofa_results')}
+        tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if {'one_stop_items','tasks','task_targets'} <= tables:
+            rows = self.conn.execute('''
+                WITH latest AS (
+                    SELECT i.account_id, MAX(i.task_id) tid
+                    FROM one_stop_items i JOIN tasks t ON t.id=i.task_id
+                    WHERE json_extract(t.params,'$.change_password')=1
+                    GROUP BY i.account_id)
+                SELECT i.account_id,i.phase,t.id task_id,t.created_at,t.status task_status
+                FROM latest l JOIN one_stop_items i ON i.task_id=l.tid AND i.account_id=l.account_id
+                JOIN tasks t ON t.id=i.task_id
+            ''')
+            for r in rows:
+                aid = r['account_id']
+                current = out.get(aid)
+                if current and current['updated_at'] >= r['created_at']:
+                    current['task_id'] = r['task_id']
+                    continue
+                phase = r['phase']
+                if phase == 'ready': status,detail='success','2FA修改并保存成功'
+                elif phase in ('changing','uncertain'):
+                    status,detail=('running','正在修改2FA') if phase=='changing' and r['task_status'] in ('running','stopping') else ('uncertain','改密结果待核对，暂不导出')
+                elif r['task_status'] in ('pending','running','stopping'):
+                    status,detail='running','等待登录及修改2FA'
+                else: status,detail='failed','本批未完成改密，请查看一条龙结果清单'
+                out[aid]={'status':status,'detail':detail,'updated_at':r['created_at'],'task_id':r['task_id']}
+        return out
 
     def add_error(
         self,

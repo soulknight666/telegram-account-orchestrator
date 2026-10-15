@@ -8,16 +8,22 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Header, Request
+from fastapi import Depends, FastAPI, HTTPException, Header, Request, Query
 from fastapi import Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.staticfiles import StaticFiles
 
 from .config import Settings
 from .db import Account, Database
@@ -26,6 +32,8 @@ from .manager import AccountManager
 from .tasks import TaskRunner, TaskStore
 from .tools import ToolContext, call_tool, list_tools
 from . import toolbox
+from .errors import ApiError, code_for_exception, error_payload
+from .web.csp import content_security_policy
 
 settings = Settings.load()
 db = Database(settings.db_path)
@@ -42,6 +50,20 @@ app = FastAPI(
     ),
 )
 
+_WEB_DIR = Path(__file__).parent / "web"
+_RELEASE_DIR = _WEB_DIR / "release"
+if _RELEASE_DIR.is_dir():
+    app.mount("/release", StaticFiles(directory=_RELEASE_DIR), name="release")
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def _release_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/release/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
 
 _bg_tasks: list[asyncio.Task[Any]] = []
 
@@ -50,6 +72,16 @@ _bg_tasks: list[asyncio.Task[Any]] = []
 async def _start_background() -> None:
     """启动登录满 N 小时自动清设备的后台循环。"""
     from . import autokick
+
+    _one_stop().interrupt_on_startup()
+
+    for status in ("pending", "running", "stopping"):
+        for task in tasks.list(limit=10000, status=status):
+            if task.kind == "auto_login":
+                for row in tasks.pending(task.id):
+                    tasks.mark_target(row["id"], "fail", "服务重启中断，请确认账号状态后重试",
+                                      code="task_cancelled")
+                tasks.set_status(task.id, "failed", "服务重启中断")
 
     if settings.auto_kick_hours > 0 and not settings.readonly:
         _bg_tasks.append(asyncio.create_task(autokick.loop(manager)))
@@ -115,10 +147,6 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
     """未捕获异常：记入错误日志并回传可读原因。"""
     import traceback
 
-    if isinstance(exc, HTTPException):
-        # FastAPI 仍可能走到这里；4xx 不记为系统错误
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
     tb = traceback.format_exc()
     tb_lines = tb.strip().splitlines()
     eid = record_error(
@@ -132,15 +160,57 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
             "query": str(request.url.query)[:300],
         },
     )
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": f"{type(exc).__name__}: {exc}",
-            "where": request.url.path,
-            "trace": tb_lines[-8:],
-            "error_id": eid,
-        },
-    )
+    detected = code_for_exception(exc)
+    safe_detail = None
+    if detected == "internal_error" and not isinstance(exc, ApiError):
+        safe_detail = "服务器内部错误"
+    info = error_payload(exc, detail=safe_detail)
+    status = getattr(exc, "status", None)
+    if status is None:
+        status = {
+            "auth_required": 401, "readonly_mode": 403, "not_found": 404,
+            "validation_error": 422, "conflict": 409, "flood_wait": 429,
+            "proxy_error": 502, "network_timeout": 504,
+        }.get(info.get("code"), 400 if info.get("code") not in {"internal_error", None} else 500)
+    # 旧的 where/trace/error_id 字段保留；trace 不向客户端泄露堆栈。
+    return JSONResponse(status_code=status, content={
+        **info, "where": request.url.path, "trace": [], "error_id": eid,
+    })
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """所有显式 HTTPException 只新增 code，不改原 detail/header。"""
+    detail = exc.detail
+    code = code_for_exception(exc, status=exc.status_code)
+    # 只读是一个更有用的 403 机器码；其他未分类状态保留 http_<status>。
+    if exc.status_code == 403 and isinstance(detail, str) and ("只读" in detail or "干跑" in detail):
+        code = "readonly_mode"
+    payload = {"detail": detail, "code": code}
+    if isinstance(exc, ApiError):
+        payload = exc.info().payload()
+    if exc.status_code == 429:
+        retry = None
+        try:
+            retry = int((exc.headers or {}).get("Retry-After", ""))
+        except (TypeError, ValueError):
+            pass
+        if retry is not None:
+            payload["retry_after"] = max(0, retry)
+    return JSONResponse(status_code=exc.status_code, content=payload,
+                        headers=dict(exc.headers or {}))
+
+
+@app.exception_handler(ApiError)
+async def api_error(request: Request, exc: ApiError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content=exc.info().payload())
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 保留 FastAPI 原 detail 数组，仅补 machine-readable code。"""
+    return JSONResponse(status_code=422,
+                        content={"detail": jsonable_encoder(exc.errors()), "code": "validation_error"})
 
 
 @app.middleware("http")
@@ -221,6 +291,13 @@ class BatchIn(BaseModel):
     concurrency: int = 3
 
 
+class BatchPreviewIn(BaseModel):
+    op: str
+    ids: list[int] = []
+    params: dict[str, Any] = {}
+    tag: str | None = None
+
+
 class BatchMessageIn(BatchIn):
     peer: str
     text: str
@@ -245,10 +322,266 @@ class WarmupIn(BatchIn):
     rounds: int = 1
 
 
+# ---------------------------------------------------------------------------
+# OpenAPI response contracts
+# ---------------------------------------------------------------------------
+# These models describe the fields already returned by the API.  ``extra=allow``
+# is intentional: older clients may receive an additive field before this
+# contract is updated, and response_model must never silently remove it.
+class ApiCompatModel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class AccountOut(ApiCompatModel):
+    id: int | None = None
+    label: str | None = None
+    phone: str | None = None
+    user_id: int | None = None
+    username: str | None = None
+    proxy: str | None = None
+    code_url: str | None = None
+    device_model: str | None = None
+    app_version: str | None = None
+    system_version: str | None = None
+    lang_code: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    status: str | None = None
+    status_note: str | None = None
+    premium: int | bool | None = None
+    locked: int | bool | None = None
+    has_2fa: int | bool | None = None
+    has_2fa_saved: bool | None = None
+    authorized: bool | None = None
+    spam_until: float | None = None
+    last_warm_at: float | None = None
+    auto_kick: int | bool | None = None
+    auto_kick_hours: float | None = None
+    auto_kick_loop: int | bool | None = None
+    login_at: float | None = None
+    adopted_at: float | None = None
+    last_kick_at: float | None = None
+    kick_retry_at: float | None = None
+    last_check_at: float | None = None
+    last_check_result: str | None = None
+    last_check_error: str | None = None
+    created_at: float | None = None
+    updated_at: float | None = None
+    kick: dict[str, Any] | None = None
+    server_now: float | None = None
+    twofa_result: dict[str, Any] | None = None
+
+
+class AccountDeltaOut(ApiCompatModel):
+    accounts: list[AccountOut] = Field(default_factory=list)
+    deleted_ids: list[int] = Field(default_factory=list)
+    server_now: float | None = None
+    updated_since: float | None = None
+
+
+AccountListOut = list[AccountOut] | AccountDeltaOut
+
+
+class TwofaOut(ApiCompatModel):
+    ok: bool | None = None
+    id: int | None = None
+    has_2fa: int | bool | None = None
+    saved: bool | None = None
+    twofa: str | None = None
+
+
+class TaskTargetOut(ApiCompatModel):
+    id: int | None = None
+    task_id: int | None = None
+    seq: int | None = None
+    target: str | None = None
+    account_id: int | None = None
+    status: str | None = None
+    status_cn: str | None = None
+    detail: str | None = None
+    code: str | None = None
+    params: dict[str, Any] | None = None
+    retry_after: int | None = None
+    updated_at: float | None = None
+
+
+class TaskOut(ApiCompatModel):
+    id: int | None = None
+    kind: str | None = None
+    title: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    status: str | None = None
+    status_cn: str | None = None
+    total: int | None = None
+    note: str | None = None
+    created_at: float | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    ok_count: int | None = None
+    fail_count: int | None = None
+    skip_count: int | None = None
+    done_count: int | None = None
+    percent: float | None = None
+    live: bool | None = None
+    targets: list[TaskTargetOut] | None = None
+
+
+class ToolboxResultOut(ApiCompatModel):
+    account_id: int | None = None
+    ok: bool | None = None
+    skipped: bool | None = None
+    error: str | None = None
+    detail: str | None = None
+    code: str | None = None
+    params: dict[str, Any] | None = None
+    result: Any = None
+
+
+class ToolboxBatchOut(ApiCompatModel):
+    op: str | None = None
+    total: int | None = None
+    ok: int | bool | None = None
+    failed: int | None = None
+    results: list[ToolboxResultOut] = Field(default_factory=list)
+
+
+class BatchPreviewSkipOut(ApiCompatModel):
+    id: int | None = None
+    reason_code: str | None = None
+    reason: str | None = None
+    params: dict[str, Any] | None = None
+
+
+class BatchPreviewOut(ApiCompatModel):
+    run: list[int] = Field(default_factory=list)
+    skip: list[BatchPreviewSkipOut] = Field(default_factory=list)
+    op: str | None = None
+    total: int | None = None
+    server_now: float | None = None
+
+
+class MixedCountOut(ApiCompatModel):
+    found: int = 0
+    imported: int = 0
+    failed: int = 0
+
+
+class MixedItemOut(ApiCompatModel):
+    path: str | None = None
+    kind: str | None = None
+    phone: str | None = None
+    status: str | None = None
+    account_id: int | None = None
+    code: str | None = None
+    reason: str | None = None
+    params: dict[str, Any] | None = None
+
+
+class MixedSkippedOut(ApiCompatModel):
+    path: str | None = None
+    code: str | None = None
+    reason: str | None = None
+    params: dict[str, Any] | None = None
+
+
+class MixedImportOut(ApiCompatModel):
+    dry_run: bool | None = None
+    filename: str | None = None
+    total: int | None = None
+    tdata: MixedCountOut = Field(default_factory=MixedCountOut)
+    session: MixedCountOut = Field(default_factory=MixedCountOut)
+    items: list[MixedItemOut] = Field(default_factory=list)
+    skipped: list[MixedSkippedOut] = Field(default_factory=list)
+    server_now: int | float | None = None
+
+
+class TdataInspectItemOut(ApiCompatModel):
+    path: str | None = None
+    phone: str | None = None
+    dc: int | None = None
+    needs_password: bool | None = None
+    existing: bool | None = None
+    status: str | None = None
+    account_id: int | None = None
+    code: str | None = None
+    reason: str | None = None
+    params: dict[str, Any] | None = None
+    debug: dict[str, Any] | None = None
+
+
+class TdataInspectOut(ApiCompatModel):
+    filename: str | None = None
+    total: int | None = None
+    items: list[TdataInspectItemOut] = Field(default_factory=list)
+    skipped: list[MixedSkippedOut] = Field(default_factory=list)
+    server_now: int | float | None = None
+
+
+class SettingOut(ApiCompatModel):
+    key: str | None = None
+    type: str | None = None
+    value: Any = None
+    default: Any = None
+    desc: str | None = None
+    restart_required: bool | None = None
+
+
+class SecretStateOut(ApiCompatModel):
+    key: str | None = None
+    set: bool | None = None
+
+
+class SettingsOut(ApiCompatModel):
+    groups: dict[str, list[SettingOut]] = Field(default_factory=dict)
+    secrets: list[SecretStateOut] = Field(default_factory=list)
+    env_path: str | None = None
+
+
+class SettingsSaveOut(ApiCompatModel):
+    saved: int | None = None
+    restart_required: list[str] = Field(default_factory=list)
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class SettingsResetOut(ApiCompatModel):
+    reset: int | None = None
+    restart_required: list[str] = Field(default_factory=list)
+
+
 def _resolve(ids: list[int], tag: str | None) -> list[int]:
     if ids:
         return ids
     return [a.id for a in db.list(tag=tag) if a.id is not None]
+
+
+def _preview_reason(account: Any, op: str, now: float) -> tuple[str, str] | None:
+    """只做现有前置条件的解释，不发起网络请求。"""
+    if account is None:
+        return ("not_found", "账号不存在")
+    if op == "check":
+        return None
+    if op in {"warmup", "message"}:
+        if not account.session_enc:
+            return ("not_authorized", "未登录")
+        if account.status != "active":
+            return ("status_not_active", f"状态为 {account.status}")
+        if account.spam_until and account.spam_until > now:
+            return ("spam_block", "处于 Spam 限制期")
+        return None
+    if op == "auto_login":
+        if not account.phone or not account.code_url:
+            return ("missing_login_info", "缺少手机号或取码链接")
+        if account.status in {"banned", "frozen", "deleted", "spam_block_perm"}:
+            return ("status_blocked", f"状态为 {account.status}")
+        if _login_busy(int(account.id)):
+            return ("busy", "账号已有登录任务")
+        return None
+    if op == "one_stop":
+        if not account.phone or not (account.session_enc or account.code_url):
+            return ("missing_login_info", "缺少手机号、会话或取码链接")
+        if _login_busy(int(account.id)):
+            return ("busy", "账号已有任务")
+        return None
+    return None
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -264,12 +597,33 @@ def favicon() -> Response:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    return (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+async def index(request: Request) -> Response:
+    # Release is the default. TAM_WEB_DEBUG=1 selects the readable artifact
+    # for debugging and source inspection without changing the route.
+    debug = os.getenv("TAM_WEB_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    filename = "index.html" if debug else "index.min.html"
+    page_path = _WEB_DIR / filename
+    if not page_path.exists():
+        page_path = _WEB_DIR / "index.html"
+    html = page_path.read_text(encoding="utf-8")
+    csp = content_security_policy(html) + "; frame-ancestors 'none'"
+    etag = '"' + hashlib.sha256(html.encode("utf-8")).hexdigest() + '"'
+    headers = {
+        "Cache-Control": "no-cache",
+        "ETag": etag,
+        "Content-Security-Policy": csp,
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return HTMLResponse(
+        content=html,
+        headers=headers,
+    )
 
 
-@app.get("/api/accounts", dependencies=[Depends(auth)])
-async def list_accounts(status: str | None = None, tag: str | None = None) -> list[dict[str, Any]]:
+@app.get("/api/accounts", response_model=AccountListOut, dependencies=[Depends(auth)])
+async def list_accounts(status: str | None = None, tag: str | None = None,
+                        updated_since: float | None = None) -> list[dict[str, Any]] | dict[str, Any]:
     """账号列表。顺便带上自动清设备的计划（kick）。
 
     不在列表里下发明文二验密码（防令牌泄露扫库）；仅标记 has_twofa_saved。
@@ -279,8 +633,32 @@ async def list_accounts(status: str | None = None, tag: str | None = None) -> li
 
     now = time.time()
     hrs = settings.auto_kick_hours
-    return [{**a.public(), "kick": autokick.plan(a, hrs, now), "server_now": now}
-            for a in db.list(status=status, tag=tag)]
+    twofa_results = db.twofa_results()
+
+    def public_account(a):
+        return {**a.public(), "kick": autokick.plan(a, hrs, now), "server_now": now,
+                "twofa_result": twofa_results.get(a.id)}
+
+    if updated_since is None:
+        return [public_account(a) for a in db.list(status=status, tag=tag)]
+
+    changes = db.changes_since(updated_since)
+    deleted_ids = changes["deleted_ids"]
+    deleted_set = set(deleted_ids)
+    accounts = []
+    for aid in changes["changed_ids"]:
+        if aid in deleted_set:
+            continue
+        account = db.get(aid)
+        if account is None:
+            continue
+        if status is not None and account.status != status:
+            continue
+        if tag is not None and tag not in account.tags:
+            continue
+        accounts.append(public_account(account))
+    return {"accounts": accounts, "deleted_ids": deleted_ids,
+            "server_now": now, "updated_since": float(updated_since)}
 
 
 
@@ -288,7 +666,7 @@ class TwofaSaveIn(BaseModel):
     password: str | None = None  # 空字符串或 null = 清除已保存密码
 
 
-@app.get("/api/accounts/{account_id}/twofa", dependencies=[Depends(auth)])
+@app.get("/api/accounts/{account_id}/twofa", response_model=TwofaOut, dependencies=[Depends(auth)])
 async def reveal_twofa(account_id: int) -> dict[str, Any]:
     """按需揭密：仅在用户点击眼睛时调用，不进列表。"""
     from .crypto import decrypt
@@ -307,7 +685,7 @@ async def reveal_twofa(account_id: int) -> dict[str, Any]:
             "saved": True, "twofa": plain}
 
 
-@app.post("/api/accounts/{account_id}/twofa", dependencies=[Depends(auth)])
+@app.post("/api/accounts/{account_id}/twofa", response_model=TwofaOut, dependencies=[Depends(auth)])
 async def save_twofa(account_id: int, body: TwofaSaveIn) -> dict[str, Any]:
     """补录/更新/清除库内保存的二验密码（不调用 Telegram，只写本地）。"""
     from .crypto import encrypt
@@ -331,7 +709,7 @@ async def save_twofa(account_id: int, body: TwofaSaveIn) -> dict[str, Any]:
     return {"ok": True, "id": account_id, "saved": True, "has_2fa": 1}
 
 
-@app.post("/api/accounts", dependencies=[Depends(auth)])
+@app.post("/api/accounts", response_model=AccountOut, dependencies=[Depends(auth)])
 async def create_account(body: AccountIn) -> dict[str, Any]:
     if db.get_by_label(body.label):
         raise HTTPException(409, "别名已存在")
@@ -339,7 +717,7 @@ async def create_account(body: AccountIn) -> dict[str, Any]:
     return acc.public()
 
 
-@app.patch("/api/accounts/{account_id}", dependencies=[Depends(auth)])
+@app.patch("/api/accounts/{account_id}", response_model=AccountOut, dependencies=[Depends(auth)])
 async def patch_account(account_id: int, body: dict[str, Any]) -> dict[str, Any]:
     allowed = {"label", "phone", "proxy", "code_url", "device_model", "app_version",
                "system_version", "lang_code", "tags", "status_note", "auto_kick", "auto_kick_hours", "auto_kick_loop"}
@@ -365,13 +743,56 @@ async def patch_account(account_id: int, body: dict[str, Any]) -> dict[str, Any]
 
 @app.delete("/api/accounts/{account_id}", dependencies=[Depends(auth)])
 async def delete_account(account_id: int) -> dict[str, Any]:
+    acc = db.get(account_id)
+    if acc is None:
+        raise HTTPException(404, "账号不存在")
+    if getattr(acc, "locked", 0):
+        raise HTTPException(423, "账号已锁定，请先解锁后删除")
     db.delete(account_id)
     return {"ok": True}
+
+class AccountLockIn(BaseModel):
+    locked: bool
+
+@app.post("/api/accounts/{account_id}/lock", dependencies=[Depends(auth)])
+async def set_account_lock(account_id: int, body: AccountLockIn) -> dict[str, Any]:
+    acc = db.get(account_id)
+    if acc is None:
+        raise HTTPException(404, "账号不存在")
+    db.update(account_id, locked=1 if body.locked else 0)
+    return {"ok": True, "id": account_id, "locked": bool(body.locked)}
+
+@app.post("/api/accounts/batch-lock", dependencies=[Depends(auth)])
+async def batch_account_lock(body: dict[str, Any]) -> dict[str, Any]:
+    ids = list(dict.fromkeys(int(x) for x in (body.get("ids") or [])))
+    locked = bool(body.get("locked", True))
+    changed = 0
+    for aid in ids:
+        if db.get(aid):
+            db.update(aid, locked=1 if locked else 0)
+            changed += 1
+    return {"ok": True, "locked": locked, "changed": changed, "requested": len(ids)}
 
 
 @app.post("/api/accounts/{account_id}/login/code", dependencies=[Depends(auth)])
 async def login_code(account_id: int) -> dict[str, Any]:
+    if _login_busy(account_id):
+        raise HTTPException(409, "该账号已有登录任务，请等待完成")
     return await manager.send_code(account_id)
+
+@app.get("/api/accounts/{account_id}/login/official-code", dependencies=[Depends(auth)])
+@app.get("/api/accounts/{account_id}/official-code", dependencies=[Depends(auth)])
+async def official_login_code(account_id: int, response: Response) -> dict[str, Any]:
+    """Read through an already authorized saved session for an external client login."""
+    response.headers['Cache-Control'] = 'no-store'
+    if not db.get(account_id):
+        raise HTTPException(404, '账号不存在')
+    if _login_busy(account_id):
+        raise HTTPException(409, '该账号正在登录，请等待完成后读取')
+    try:
+        return await manager.read_official_code(account_id)
+    except Exception as exc:
+        raise HTTPException(502, f"读取失败（{type(exc).__name__}），请确认账号会话有效、代理连通后重试") from None
 
 
 @app.post("/api/accounts/{account_id}/login/verify", dependencies=[Depends(auth)])
@@ -644,6 +1065,25 @@ class BatchExportIn(BaseModel):
     ids: list[int]
     format: str = "pack"  # pack | session（批量只支持打包类）
 
+class CodeLinksExportIn(BaseModel):
+    ids: list[int] = []
+
+
+_export_lock = asyncio.Lock()
+
+@app.post("/api/accounts/export-code-links", dependencies=[Depends(auth)])
+async def export_code_links(body: CodeLinksExportIn) -> Response:
+    """Export only phone + original code URL, separate from session/pack export."""
+    rows = []
+    for aid in dict.fromkeys(body.ids):
+        account = db.get(aid)
+        if account and account.phone and account.code_url:
+            rows.append(f"{account.phone}----{account.code_url}")
+    if not rows:
+        raise HTTPException(400, "没有可导出的取码链接")
+    return Response(('\n'.join(rows) + '\n').encode('utf-8'), media_type='text/plain',
+                    headers={'Content-Disposition': 'attachment; filename="code-links.txt"'})
+
 
 @app.post("/api/accounts/export", dependencies=[Depends(auth)])
 async def export_accounts_batch(body: BatchExportIn) -> Any:
@@ -658,47 +1098,35 @@ async def export_accounts_batch(body: BatchExportIn) -> Any:
     if fmt not in ("pack", "session"):
         raise HTTPException(400, "批量导出只支持 pack 或 session")
 
-    buf = io.BytesIO()
-    errors: list[dict[str, Any]] = []
-    ok_n = 0
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        with tempfile.TemporaryDirectory(prefix="tam_bexp_") as tmp:
-            for i, aid in enumerate(body.ids):
-                acc = db.get(aid)
-                if acc is None or not acc.session_enc:
-                    errors.append({"id": aid, "error": "不存在或未登录"})
-                    continue
-                try:
-                    if fmt == "session":
-                        safe = "".join(c for c in (acc.label or f"acc{aid}")
-                                       if c.isalnum() or c in "-_.") or f"acc{aid}"
-                        path = manager.export_session_file(
-                            aid, str(Path(tmp) / f"{i:03d}_{safe}.session"))["path"]
-                        zf.write(path, f"{safe}.session")
-                    else:
-                        sub = Path(tmp) / f"a{aid}"
-                        info = manager.export_account_pack(aid, str(sub))
-                        zf.write(info["session"], f"{info['stem']}.session")
-                        zf.write(info["json"], f"{info['stem']}.json")
-                    ok_n += 1
-                except Exception as exc:  # noqa: BLE001
-                    errors.append({"id": aid, "error": str(exc)})
+    from .export_batch import build_export
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+    import shutil
+
+    if _export_lock.locked():
+        raise HTTPException(409, "已有批量导出正在生成，请稍后重试")
+    async with _export_lock:
+        worker = asyncio.create_task(asyncio.to_thread(
+            build_export, settings, list(dict.fromkeys(body.ids)), fmt))
+        try:
+            folder, path, ok_n, failed = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # The thread cannot be interrupted during SQLite/ZIP writes.
+            # Wait for it and remove its output before releasing the slot.
+            try:
+                folder, *_ = await worker
+                shutil.rmtree(folder)
+            finally:
+                raise
     if ok_n == 0:
-        msg = "没有成功导出任何账号"
-        if errors:
-            msg += "：" + "; ".join(
-                f"#{e.get('id')} {e.get('error')}" for e in errors[:5])
-        raise HTTPException(400, msg)
-    raw = buf.getvalue()
-    return Response(
-        content=raw,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": 'attachment; filename="accounts-export.zip"',
-            "X-Export-Ok": str(ok_n),
-            "X-Export-Failed": str(len(errors)),
-        },
-    )
+        shutil.rmtree(folder)
+        raise HTTPException(400, f'没有成功导出账号（失败 {failed}），任务检查点已保留')
+    # 单文件外发版保留一份到 exe 同级 export 目录；普通运行仍在下载完成后清理临时目录。
+    cleanup = shutil.rmtree if not os.getenv("TAM_EXPORT_DIR", "").strip() else (lambda _p: None)
+    return FileResponse(path, media_type="application/zip", filename="accounts-export.zip",
+                        headers={"X-Export-Ok": str(ok_n), "X-Export-Failed": str(failed)},
+                        background=BackgroundTask(cleanup, folder))
+
 
 
 
@@ -986,9 +1414,63 @@ async def batch_warmup(body: WarmupIn) -> dict[str, Any]:
 @app.post("/api/batch/check", dependencies=[Depends(auth)])
 async def batch_check(body: BatchIn) -> list[dict[str, Any]]:
     ids = _resolve(body.account_ids, body.tag)
+    # 健康检查是只读轻量请求，默认提高并发；可通过 TAM_HEALTH_CONCURRENCY 调整。
+    health_concurrency = body.concurrency if body.concurrency and body.concurrency > 0 else int(os.getenv("TAM_HEALTH_CONCURRENCY", "12"))
+    health_concurrency = max(1, min(32, health_concurrency))
     return await manager.run_batch(
-        ids, manager.health_check, concurrency=body.concurrency, stagger=False
+        ids, manager.health_check, concurrency=health_concurrency, stagger=False
     )
+
+
+@app.post("/api/batch/preview", response_model=BatchPreviewOut, dependencies=[Depends(auth)])
+async def batch_preview(body: BatchPreviewIn) -> dict[str, Any]:
+    """执行前预览：复用现有筛选条件，只返回将执行与跳过的账号。"""
+    op = body.op.strip()
+    if op == "auto_login" and not body.ids:
+        ids = [a.id for a in db.list(tag=body.tag)
+               if a.id is not None and a.code_url and not a.session_enc]
+    else:
+        ids = list(dict.fromkeys(body.ids or _resolve([], body.tag)))
+    if not ids:
+        raise HTTPException(400, "没有选中账号")
+    now = time.time()
+
+    if op == "twofa" or op.startswith("toolbox:"):
+        from . import toolbox
+
+        tool_op = "twofa" if op == "twofa" else op.split(":", 1)[1].strip()
+        try:
+            result = toolbox.preview_op_batch(manager, ids, tool_op, body.params)
+        except toolbox.ToolboxError as exc:
+            raise ApiError(exc.code, str(exc), status=400, params=exc.params) from exc
+        return {**result, "op": op, "total": len(ids), "server_now": now}
+
+    if op not in {"check", "auto_login", "warmup", "message", "one_stop"}:
+        raise HTTPException(400, f"不支持的预览操作：{op}")
+
+    runnable: list[int] = []
+    reasons: dict[int, tuple[str, str]] = {}
+    message_healthy_only = bool(body.params.get("healthy_only", True))
+    healthy = (set(manager.healthy_ids(ids))
+               if op == "warmup" or (op == "message" and message_healthy_only)
+               else set(ids))
+    for aid in ids:
+        account = db.get(aid)
+        reason = _preview_reason(account, op, now)
+        if reason is not None:
+            reasons[aid] = reason
+            continue
+        if op in {"warmup", "message"} and aid not in healthy:
+            # healthy_ids 是执行端的唯一筛选来源；这里仅把结果解释成人话。
+            reasons[aid] = _preview_reason(account, op, now) or (
+                "not_healthy", "未通过健康账号筛选")
+            continue
+        runnable.append(aid)
+
+    from .preview import build_preview
+
+    return {**build_preview(ids, runnable=runnable, reasons=reasons),
+            "op": op, "total": len(ids), "server_now": now}
 
 
 @app.post("/api/batch/message", dependencies=[Depends(auth)])
@@ -1009,6 +1491,8 @@ class ImportIn(BaseModel):
     text: str
     tags: list[str] = []
     proxy: str | None = None
+    proxy_pool: list[str] = []
+    links_per_proxy: int = Field(default=0, ge=0)
     dry_run: bool = False
 
 
@@ -1043,16 +1527,301 @@ class TdataIn(BaseModel):
 class AutoLoginIn(BaseModel):
     password: str | None = None
     timeout: float = 120.0
+    # 首次查询由 LoginTiming 自适应；8 秒为冷启动值，GetHTML 的后续刷新仍遵守 60 秒下限。
+    query_delay: float = Field(default=8.0, ge=0, le=600)
+    poll_interval: float = Field(default=60.0, ge=1, le=600)
+    adaptive_timing: bool = True
 
 
 class BatchAutoLoginIn(BatchIn):
     password: str | None = None
     timeout: float = 120.0
+    query_delay: float = Field(default=8.0, ge=0, le=600)
+    poll_interval: float = Field(default=60.0, ge=1, le=600)
+    adaptive_timing: bool = True
+
+
+class BatchLogoutReloginIn(BatchAutoLoginIn):
+    concurrency: int = 3
+
+
+class LoginTaskIn(BatchAutoLoginIn):
+    relogin: bool = False
+    retry_task_id: int | None = None
+    start_delay: float = Field(default=1.0, ge=0, le=5, allow_inf_nan=False)
+
+
+_login_reservations: dict[int, int] = {}
+_legacy_login_reservations: set[int] = set()
+
+
+def _login_busy(aid: int) -> bool:
+    tid = _login_reservations.get(aid)
+    return bool(aid in _legacy_login_reservations or (tid and runner.is_running(tid)) or
+                aid in getattr(manager, "_auto_login_active", set()))
+
+
+async def _run_reserved_login_batch(ids, handler, concurrency, stagger):
+    ids = list(dict.fromkeys(ids))
+    for aid in ids:
+        if _login_busy(aid):
+            raise HTTPException(409, f"账号 #{aid} 已在登录队列中")
+    _legacy_login_reservations.update(ids)
+    try:
+        return await manager.run_batch(ids, handler, concurrency=concurrency, stagger=stagger)
+    finally:
+        _legacy_login_reservations.difference_update(ids)
+
+
+def _login_failure_message(exc, *, page_password_used: bool = False):
+    name = type(exc).__name__
+    if name == "FloodWaitError":
+        return f"Telegram 限流，请等待 {int(getattr(exc, 'seconds', 0))} 秒后重试"
+    messages = {
+        "TimeoutError": "连接或取码超时，请检查代理及查询等待设置",
+        "URLError": "取码网络请求失败，请检查代理及平台连接",
+        "PasswordHashInvalidError": "两步验证密码错误，请重新填写",
+        "PhoneCodeExpiredError": "验证码已过期，请重新启动登录",
+        "PhoneCodeInvalidError": "验证码无效，未取得有效新码",
+    }
+    if name == "PasswordHashInvalidError":
+        return ("2FA不匹配：链接页面提供的二验密码无效" if page_password_used
+                else "2FA错误：填写的二验密码无效")
+    if name in messages:
+        return messages[name]
+    if name == "HTTPError":
+        return f"取码平台返回 HTTP {int(getattr(exc, 'code', 0))}，请检查限流及链接有效期"
+    message = str(exc)
+    if "没有待完成的登录" in message:
+        return "登录状态失效：当前进程没有待完成的验证码会话，请重新发送验证码"
+    if "会话未授权或已失效" in message or "AuthKeyUnregisteredError" in message:
+        return "会话已失效：Telegram 授权密钥已注销，请重新登录或导入 session"
+    if "2FA不匹配" in message:
+        return message
+    if "两步验证" in message:
+        return "该账号需要两步验证密码，请填写后重试"
+    if "启动监控失败" in str(exc):
+        return "取码平台启动监控失败，请检查平台状态及链接有效期"
+    return f"登录失败：{name}，请检查连接、取码和二验设置"
+
+
+_one_stop_service = None
+
+
+def _one_stop():
+    global _one_stop_service
+    from .one_stop import OneStopWorkflow
+    if _one_stop_service is None or _one_stop_service.store is not tasks or _one_stop_service.manager is not manager:
+        _one_stop_service = OneStopWorkflow(tasks, runner, manager, toolbox.run_op, _login_failure_message)
+    return _one_stop_service
+
+
+class OneStopIn(BaseModel):
+    account_ids: list[int] = Field(min_length=1)
+    concurrency: int = Field(default=8, ge=1, le=32)
+    new_password: str = Field(default='', max_length=256)
+    format: str = 'pack'
+    query_delay: float = Field(default=8, ge=0, le=600, allow_inf_nan=False)
+    poll_interval: float = Field(default=60, ge=1, le=600, allow_inf_nan=False)
+
+
+@app.post('/api/tasks/one-stop', dependencies=[Depends(auth)])
+async def create_one_stop(body: OneStopIn):
+    if settings.readonly:
+        raise HTTPException(403, '当前为只读模式')
+    for aid in body.account_ids:
+        if _login_busy(aid):
+            raise HTTPException(409, f'账号 #{aid} 已在运行任务中')
+    try:
+        flow = _one_stop()
+        task = flow.create(body.account_ids, concurrency=body.concurrency,
+                           new_password=body.new_password, fmt=body.format,
+                           query_delay=body.query_delay, poll_interval=body.poll_interval)
+        flow.start(task.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    for aid in body.account_ids:
+        _login_reservations[aid] = task.id
+    return flow.snapshot(task.id)
+
+
+@app.get('/api/tasks/one-stop', dependencies=[Depends(auth)])
+async def list_one_stop():
+    # SQL filtering avoids hiding this feature behind hundreds of unrelated jobs.
+    rows = db.conn.execute("SELECT id FROM tasks WHERE kind='one_stop' ORDER BY id DESC LIMIT 50").fetchall()
+    return [_one_stop().snapshot(r['id']) for r in rows]
+
+
+@app.get('/api/tasks/one-stop/{task_id}', dependencies=[Depends(auth)])
+async def one_stop_status(task_id: int, limit: int = Query(default=0, ge=0, le=1000),
+                          offset: int = Query(default=0, ge=0)):
+    try:
+        flow = _one_stop()
+        data = flow.snapshot(task_id)
+        data['targets'] = flow.results(task_id, limit, offset) if limit else []
+        return data
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@app.post('/api/tasks/one-stop/{task_id}/resume', dependencies=[Depends(auth)])
+async def resume_one_stop(task_id: int):
+    if settings.readonly:
+        raise HTTPException(403, '当前为只读模式')
+    flow = _one_stop()
+    try:
+        if flow.snapshot(task_id)['live']:
+            return flow.snapshot(task_id)
+        ids = [int(r['target']) for r in db.conn.execute(
+            'SELECT target FROM task_targets WHERE task_id=?', (task_id,))]
+        if any(_login_busy(aid) for aid in ids):
+            raise HTTPException(409, '部分账号正在其它任务中，请稍后继续')
+        flow.start(task_id)
+        for aid in ids:
+            _login_reservations[aid] = task_id
+        return flow.snapshot(task_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@app.post('/api/tasks/one-stop/{task_id}/export', dependencies=[Depends(auth)])
+async def export_one_stop(task_id: int):
+    try:
+        flow = _one_stop()
+        snapshot = flow.snapshot(task_id)
+        if snapshot['live']:
+            raise HTTPException(409, '任务仍在运行，请等待或停止后导出')
+        ids = flow.export_ids(task_id)
+        if not ids:
+            raise HTTPException(400, '没有已确认可导出的账号，结果已保留')
+        return await export_accounts_batch(BatchExportIn(ids=ids, format=snapshot['params']['format']))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+# Compatibility endpoint for older cached frontends which used a plain link
+# (GET) for the download action.  Keeping this alias avoids a confusing 405
+# while users refresh from a previously generated page; the operation still
+# enforces the same auth, completion and export checks as POST.
+@app.get('/api/tasks/one-stop/{task_id}/export', dependencies=[Depends(auth)])
+async def export_one_stop_get(task_id: int):
+    return await export_one_stop(task_id)
+
+
+@app.post("/api/tasks/login", dependencies=[Depends(auth)])
+async def create_login_task(body: LoginTaskIn) -> dict[str, Any]:
+    ids = list(dict.fromkeys(body.account_ids))
+    if body.retry_task_id is not None:
+        previous = tasks.get(body.retry_task_id)
+        if not previous or previous.kind != "auto_login" or runner.is_running(previous.id):
+            raise HTTPException(400, "只能重试已结束的自动登录任务")
+        ids = [int(row["target"]) for row in tasks.targets(previous.id, status="fail", limit=10000)]
+        body.relogin = False
+    if not ids:
+        raise HTTPException(400, "没有待登录或失败的账号")
+    for aid in ids:
+        acc = db.get(aid)
+        if not acc or not acc.phone or not acc.code_url:
+            raise HTTPException(400, f"账号 #{aid} 缺少手机号或取码链接")
+        if _login_busy(aid):
+            raise HTTPException(409, f"账号 #{aid} 已在登录队列中")
+    concurrency = max(1, int(body.concurrency or 1))
+    task = tasks.create("auto_login", "退出并重登" if body.relogin else "自动登录",
+                        [str(aid) for aid in ids], params={
+                            "query_delay": body.query_delay, "poll_interval": body.poll_interval, "adaptive_timing": body.adaptive_timing,
+                            "concurrency": concurrency, "timeout": body.timeout,
+                            "start_delay": body.start_delay})
+
+    # 受控预取：当前波次进入等待后，仅提前发送下一波验证码。
+    wave_size = concurrency
+    id_positions = {aid: i for i, aid in enumerate(ids)}
+    prefetched: set[int] = set()
+    ready: dict[int, asyncio.Event] = {}
+    wave_started = asyncio.Event()
+    prefetch_stop = asyncio.Event()
+    async def prefetch_worker():
+        try:
+            for start in range(wave_size, len(ids), wave_size):
+                await wave_started.wait()
+                if prefetch_stop.is_set(): return
+                batch = ids[start:start + wave_size]
+                results = await asyncio.gather(*(manager.send_code(aid) for aid in batch), return_exceptions=True)
+                for aid, result in zip(batch, results):
+                    if not isinstance(result, BaseException): prefetched.add(aid)
+                    ready.setdefault(aid, asyncio.Event()).set()
+                wave_started.clear()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Background prefetch must never become an un-retrieved task
+            # exception; release all waiters so they can perform normal send.
+            for aid in ids[wave_size:]:
+                ready.setdefault(aid, asyncio.Event()).set()
+
+    async def handler(row):
+        aid = int(row["target"])
+        if not body.relogin and id_positions.get(aid, 0) >= wave_size:
+            event = ready.setdefault(aid, asyncio.Event())
+            try: await asyncio.wait_for(event.wait(), timeout=max(5.0, body.timeout))
+            except asyncio.TimeoutError: pass
+        # Start prefetching only when the first account of the current wave
+        # actually begins processing, keeping at most one wave ahead.
+        pos = id_positions.get(aid, 0)
+        if pos >= wave_size and pos % wave_size == 0:
+            wave_started.set()
+        elif pos < wave_size:
+            wave_started.set()
+        def progress(detail):
+            # 高频倒计时进度走合并写入；兼容轻量测试 TaskStore 替身。
+            mark_progress = getattr(tasks, "mark_progress", None)
+            if mark_progress is not None:
+                mark_progress(row["id"], detail, account_id=aid)
+            else:
+                tasks.mark_target(row["id"], "running", detail, account_id=aid)
+        try:
+            acc = db.get(aid)
+            if acc and acc.status == "active" and acc.session_enc and not body.relogin:
+                progress("正在验证已有登录会话")
+                if await manager.login_session_authorized(aid):
+                    return {"account_id": aid, "detail": "已有会话验证有效，未重复发码"}
+            if body.relogin:
+                progress("正在退出旧会话")
+                await manager.logout(aid)
+            await manager.auto_login(aid, password=body.password, timeout=body.timeout,
+                                     query_delay=body.query_delay, poll_interval=body.poll_interval,
+                                     adaptive_timing=body.adaptive_timing, progress=progress,
+                                     prefetched=aid in prefetched)
+            return {"account_id": aid, "detail": "登录成功"}
+        except Exception as exc:
+            # 失败原因写回账号行，详情经过分类与脱敏。
+            reason = _login_failure_message(exc)
+            status = "unauthorized" if (type(exc).__name__ in {"SessionUnauthorizedError", "UserDeactivatedBanError"} or "会话已失效" in reason) else "error"
+            try:
+                db.update(aid, status=status, status_note=reason, last_check_at=time.time())
+                db.log(aid, "auto_login", False, reason)
+            except Exception:
+                pass
+            raise RuntimeError(reason) from None
+
+    prefetch_task = (None if body.relogin else
+                     asyncio.create_task(prefetch_worker(), name=f"prefetch-login-{task.id}"))
+    runner.spawn(task.id, handler, concurrency=concurrency, delay=body.start_delay,
+                 target_timeout=max(body.query_delay, body.poll_interval) + body.timeout + 120)
+    async def cleanup_prefetch():
+        while runner.is_running(task.id): await asyncio.sleep(1)
+        if prefetch_task is not None:
+            prefetch_stop.set(); prefetch_task.cancel()
+            await asyncio.gather(prefetch_task, return_exceptions=True)
+    asyncio.create_task(cleanup_prefetch(), name=f"cleanup-prefetch-{task.id}")
+    for aid in ids:
+        _login_reservations[aid] = task.id
+    return {"ok": True, "task": task.public()}
 
 
 class CodeSourceProbeIn(BaseModel):
     url: str
     proxy: str | None = None
+    proxy_pool: list[str] = []
+    links_per_proxy: int = 0
     timeout: float = 15.0
 
 
@@ -1062,7 +1831,10 @@ async def import_accounts_endpoint(body: ImportIn) -> dict[str, Any]:
     from .importer import import_accounts
 
     return import_accounts(db, body.text, tags=body.tags,
-                           proxy=body.proxy, dry_run=body.dry_run)
+                           proxy=body.proxy, dry_run=body.dry_run,
+                           proxy_pool=body.proxy_pool,
+                           links_per_proxy=body.links_per_proxy,
+                           default_proxy=settings.default_proxy)
 
 
 @app.get("/api/code-sources/providers", dependencies=[Depends(auth)])
@@ -1493,6 +2265,282 @@ async def import_tdata_upload(
         }
 
 
+def _mixed_bool(value: str | None, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "y", "是"}:
+        return True
+    if text in {"0", "false", "no", "off", "n", "否"}:
+        return False
+    raise ApiError("validation_error", f"布尔参数值无效：{value}", status=422)
+
+
+def _mixed_tags(value: str | None) -> list[str]:
+    if not value:
+        return []
+    text = value.strip()
+    if text.startswith("["):
+        import json as _json
+        try:
+            parsed = _json.loads(text)
+        except (TypeError, ValueError) as exc:
+            raise ApiError("validation_error", "tags 必须是 JSON 数组或逗号分隔文本", status=422) from exc
+        if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
+            raise ApiError("validation_error", "tags 必须是字符串数组", status=422)
+        return [x.strip() for x in parsed if x.strip()]
+    return [x.strip() for x in text.split(",") if x.strip()]
+
+
+async def _read_mixed_multipart(request: Request) -> tuple[bytes, str, dict[str, str]]:
+    """读取本接口所需的最小 multipart 结构，不引入 python-multipart 依赖。
+
+    现有上传接口使用原始请求体；这里保留同样的部署兼容性，只接收一个
+    ``file`` 部件和普通文本字段。ZIP 内容不经过字符串解码。
+    """
+    import re as _re
+
+    content_type = request.headers.get("content-type", "")
+    match = _re.search(r"boundary=(?:\"([^\"]+)\"|([^;\s]+))", content_type, _re.I)
+    if not match or "multipart/form-data" not in content_type.lower():
+        raise HTTPException(422, "必须使用 multipart/form-data 上传 file")
+    boundary = (match.group(1) or match.group(2)).encode("utf-8")
+    body = await request.body()
+    try:
+        max_upload = max(1, int(os.environ.get("TAM_MIXED_MAX_UPLOAD_MB", "1024"))) * 1024 * 1024
+    except ValueError:
+        max_upload = 1024 * 1024 * 1024
+    if len(body) > max_upload:
+        raise ApiError("import_bad_archive", f"上传文件超过 {max_upload // 1024 // 1024}MB",
+                       status=413)
+
+    fields: dict[str, str] = {}
+    file_data: bytes | None = None
+    file_name = "upload.zip"
+    marker = b"--" + boundary
+    for raw_part in body.split(marker)[1:]:
+        if raw_part.startswith(b"--"):
+            break
+        part = raw_part
+        if part.startswith(b"\r\n"):
+            part = part[2:]
+        if part.endswith(b"\r\n"):
+            part = part[:-2]
+        if b"\r\n\r\n" not in part:
+            continue
+        raw_headers, content = part.split(b"\r\n\r\n", 1)
+        headers = raw_headers.decode("latin-1", errors="replace")
+        disposition = next((x for x in headers.split("\r\n")
+                            if x.lower().startswith("content-disposition:")), "")
+        name_match = _re.search(r"(?:^|;)\s*name=\"([^\"]+)\"", disposition, _re.I)
+        if not name_match:
+            continue
+        field_name = name_match.group(1)
+        filename_match = _re.search(
+            r"filename=(?:\"([^\"]*)\"|([^;\r\n]+))", disposition, _re.I
+        )
+        if filename_match:
+            file_name = Path(filename_match.group(1) or filename_match.group(2) or file_name).name or file_name
+            file_data = content
+        else:
+            fields[field_name] = content.decode("utf-8-sig", errors="replace")
+    if file_data is None:
+        raise HTTPException(422, "file 是必填字段")
+    return file_data, file_name, fields
+
+
+def _mixed_item_public(item: dict[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in item.items() if k not in {"source", "sidecar"}}
+    out.setdefault("account_id", None)
+    out.setdefault("code", None)
+    out.setdefault("reason", None)
+    return out
+
+
+def _mixed_phone(value: Any) -> str | None:
+    from .mixed_import import PHONE_RE
+    import re as _re
+    text = str(value or "").strip()
+    if not text:
+        return None
+    value = _re.sub(r"[^0-9+]", "", text)
+    if not PHONE_RE.fullmatch(value):
+        return None
+    return value if value.startswith("+") else "+" + value
+
+
+def _mixed_existing(phone: str | None) -> Any:
+    if not phone:
+        return None
+    target = _mixed_phone(phone)
+    for account in db.list():
+        if _mixed_phone(account.phone) == target:
+            return account
+    return None
+
+
+def _mixed_error(exc: BaseException, *, tdata: bool = False) -> tuple[str, str]:
+    text = str(exc).strip() or type(exc).__name__
+    low = text.lower()
+    if tdata and any(x in low for x in ("passcode", "password", "密码", "加密", "decrypt")):
+        return "tdata_passcode", "tdata 设置了本地密码或密码不正确"
+    code = code_for_exception(exc)
+    if code not in {"auth_required", "readonly_mode", "not_found", "validation_error",
+                    "conflict", "internal_error", "session_missing", "session_invalid",
+                    "account_banned", "account_deleted", "account_restricted", "account_locked",
+                    "twofa_required", "twofa_wrong", "phone_invalid", "code_timeout",
+                    "code_invalid", "code_link_missing", "flood_wait", "proxy_error",
+                    "network_timeout", "dc_migrate", "import_duplicate", "tdata_passcode",
+                    "op_unknown", "op_param_missing", "task_cancelled", "peer_invalid",
+                    "privacy_restricted"}:
+        code = "internal_error"
+    return code, text[:1000]
+
+
+@app.post(
+    "/api/import/mixed",
+    dependencies=[Depends(auth)],
+    response_model=MixedImportOut,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["file"],
+                        "properties": {
+                            "file": {"type": "string", "format": "binary"},
+                            "dry_run": {"type": "boolean", "default": True},
+                            "label": {"type": "string"},
+                            "proxy": {"type": "string"},
+                            "tags": {"type": "string", "description": "JSON 数组或逗号分隔文本"},
+                            "password": {"type": "string", "format": "password"},
+                            "tdata_password": {"type": "string", "format": "password"},
+                            "tdata_passcode": {"type": "string", "format": "password"},
+                            "twofa": {"type": "string", "format": "password"},
+                            "twofa_password": {"type": "string", "format": "password"},
+                            "own_api": {"type": "boolean", "default": False},
+                            "debug": {"type": "boolean", "default": False},
+                        },
+                    }
+                }
+            },
+        }
+    },
+)
+async def import_mixed_zip(request: Request) -> dict[str, Any]:
+    """分析或导入同时包含 tdata 与 .session 的 ZIP。
+
+    这是新增的同步接口；``dry_run`` 默认为 true，只扫描、不写数据库。
+    正式导入逐项处理，单项失败不会中止其它项，临时目录在 finally 清理。
+    """
+    import tempfile
+
+    from .crypto import encrypt
+    from .mixed_import import MixedArchiveError, extract_mixed_zip, scan_mixed_tree
+
+    raw, filename, fields = await _read_mixed_multipart(request)
+    if not raw.startswith(b"PK") and not filename.lower().endswith(".zip"):
+        raise ApiError("import_bad_archive", "请上传 ZIP 文件", status=400)
+    dry_run = _mixed_bool(fields.get("dry_run"), True)
+    label = (fields.get("label") or "").strip() or None
+    proxy = (fields.get("proxy") or "").strip() or None
+    tags = _mixed_tags(fields.get("tags"))
+    password = ((fields.get("password") or fields.get("tdata_password") or
+                 fields.get("tdata_passcode") or "").strip() or None)
+    twofa = ((fields.get("twofa") or fields.get("twofa_password") or "").strip() or None)
+    own_api = _mixed_bool(fields.get("own_api"), False)
+    debug = _mixed_bool(fields.get("debug"), False)
+
+    with tempfile.TemporaryDirectory(prefix="tam_mixed_") as tmp:
+        extracted = Path(tmp) / "extracted"
+        try:
+            await asyncio.to_thread(extract_mixed_zip, raw, extracted)
+        except MixedArchiveError as exc:
+            raise ApiError("import_bad_archive", str(exc), status=400) from exc
+        except OSError as exc:
+            raise ApiError("import_bad_archive", "临时目录写入失败", status=400) from exc
+
+        scanned = scan_mixed_tree(extracted)
+        items = scanned["items"]
+        skipped = scanned["skipped"]
+        for item in items:
+            existing = _mixed_existing(item.get("phone"))
+            if existing is not None:
+                item.update(status="duplicate", code="import_duplicate",
+                            reason="账号已存在", params={"existing_id": existing.id})
+
+        if not dry_run:
+            for item in items:
+                if item.get("status") == "duplicate":
+                    continue
+                source = item["source"]
+                meta = item.get("sidecar") or {}
+                item_label = label or (str(meta.get("label") or meta.get("name") or "").strip() or None)
+                if not item_label:
+                    item_label = Path(source).stem
+                item_twofa = twofa or str(meta.get("twoFA") or meta.get("twofa") or "").strip() or None
+                try:
+                    if item["kind"] == "tdata":
+                        result = await manager.import_tdata(
+                            str(source), label=item_label, password=password,
+                            proxy=proxy, tags=tags, use_desktop_api=not own_api,
+                            debug=debug,
+                        )
+                    else:
+                        result = await manager.import_session_files(
+                            str(source), label=item_label, proxy=proxy,
+                            tags=tags, scan=False,
+                        )
+                    ok_rows = [row for row in (result or []) if row.get("ok")]
+                    if not ok_rows:
+                        failed_row = (result or [{}])[0]
+                        failed_code = failed_row.get("code")
+                        failed_detail = failed_row.get("error") or failed_row.get("detail") or "导入失败"
+                        if failed_code:
+                            raise ApiError(failed_code, failed_detail, status=400)
+                        raise RuntimeError(failed_detail)
+                    row = ok_rows[0]
+                    account_id = row.get("id")
+                    item["account_id"] = account_id
+                    if row.get("merged_into_existing"):
+                        item.update(status="duplicate", code="import_duplicate",
+                                    reason="账号已存在", params={"existing_id": account_id})
+                    else:
+                        item.update(status="imported", code=None, reason=None)
+                    if item_twofa and account_id:
+                        db.update(account_id, twofa_enc=encrypt(settings.master_key, item_twofa), has_2fa=1)
+                except BaseException as exc:  # tdata parser may raise BaseException on optional deps
+                    code, reason = _mixed_error(exc, tdata=item["kind"] == "tdata")
+                    item.update(status="failed", code=code, reason=reason)
+
+        for item in items:
+            # ``source``/sidecar are internal only; JSON must never contain secrets.
+            item.pop("source", None)
+            item.pop("sidecar", None)
+        tdata_items = [x for x in items if x.get("kind") == "tdata"]
+        session_items = [x for x in items if x.get("kind") == "session"]
+
+        def summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+            return {
+                "found": len(rows),
+                "imported": sum(1 for x in rows if x.get("status") == "imported"),
+                "failed": sum(1 for x in rows if x.get("status") in {"failed", "duplicate"}),
+            }
+
+        return {
+            "dry_run": dry_run,
+            "filename": filename,
+            "total": len(items),
+            "tdata": summary(tdata_items),
+            "session": summary(session_items),
+            "items": [_mixed_item_public(x) for x in items],
+            "skipped": skipped,
+            "server_now": int(time.time()),
+        }
+
+
 @app.post("/api/tdata/inspect", dependencies=[Depends(auth)])
 async def inspect_tdata_endpoint(body: TdataIn) -> dict[str, Any]:
     """只体检不导入：逐步骤诊断 tdata 目录，导入失败时先跑这个。"""
@@ -1509,10 +2557,166 @@ async def inspect_tdata_endpoint(body: TdataIn) -> dict[str, Any]:
     return {"reports": [inspect_tdata(str(d), body.password) for d in dirs]}
 
 
+def _tdata_inspect_code(error: str | None, *, needs_password: bool = False) -> str | None:
+    """Map a diagnostic-only tdata error to the public machine code set."""
+    if not error:
+        return None
+    text = str(error).lower()
+    if needs_password or any(x in text for x in ("passcode", "password", "本地密码", "密码", "decrypt")):
+        return "tdata_passcode"
+    if any(x in text for x in ("key_datas", "不是有效", "没有解析", "tdata 里没有")):
+        return "import_unknown_format"
+    return "internal_error"
+
+
+def _tdata_existing(*, phone: str | None, user_id: Any) -> Any:
+    """Look up an existing account without creating or mutating anything."""
+    found = _mixed_existing(phone)
+    if found is not None:
+        return found
+    try:
+        uid = int(user_id) if user_id is not None else None
+    except (TypeError, ValueError):
+        uid = None
+    if uid is None:
+        return None
+    for account in db.list():
+        if getattr(account, "user_id", None) == uid:
+            return account
+    return None
+
+
+def _tdata_inspect_item(item: dict[str, Any], passcode: str | None,
+                        debug: bool) -> dict[str, Any]:
+    """Build the stable, non-mutating upload-inspection row."""
+    from .tdata import inspect_tdata
+
+    source = item.get("source")
+    report = inspect_tdata(str(source), passcode)
+    accounts = report.get("accounts") or []
+    first = accounts[0] if accounts else {}
+    user_id = first.get("user_id")
+    phone = _mixed_phone(item.get("phone"))
+    existing = _tdata_existing(phone=phone, user_id=user_id)
+    def _password_hint(value: Any) -> bool:
+        detail = str(value or "")
+        low = detail.lower()
+        if "passcode" in low or "password" in low:
+            return True
+        if "本地密码" not in detail:
+            return False
+        return not any(x in detail for x in ("无本地密码", "没有本地密码", "未设置本地密码"))
+
+    needs_password = any(_password_hint(step.get("detail"))
+                         for step in (report.get("steps") or []))
+    if report.get("error") and not passcode and "密码" in str(report.get("error")):
+        needs_password = True
+    error = str(report.get("error") or "").strip() or None
+    code = _tdata_inspect_code(error, needs_password=needs_password)
+    params: dict[str, Any] | None = None
+    status = "ready"
+    account_id = None
+    if existing is not None:
+        status = "duplicate"
+        code = "import_duplicate"
+        account_id = existing.id
+        params = {"existing_id": existing.id}
+        phone = phone or _mixed_phone(getattr(existing, "phone", None))
+    elif error:
+        status = "failed"
+    row: dict[str, Any] = {
+        "path": item.get("path"),
+        "phone": phone,
+        "dc": first.get("main_dc"),
+        "needs_password": bool(needs_password),
+        "existing": existing is not None,
+        "status": status,
+        "account_id": account_id,
+        "code": code,
+        "reason": error,
+        "params": params,
+    }
+    if debug:
+        # The report contains parser steps and IDs/DCs only; it never contains
+        # session strings, local passwords, or database ciphertext.
+        row["debug"] = report
+    return row
+
+
+@app.post(
+    "/api/import/tdata/inspect",
+    response_model=TdataInspectOut,
+    dependencies=[Depends(auth)],
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["file"],
+                        "properties": {
+                            "file": {"type": "string", "format": "binary"},
+                            "tdata_passcode": {"type": "string", "format": "password"},
+                            "debug": {"type": "boolean", "default": False},
+                            "password": {"type": "string", "format": "password"},
+                            "tdata_password": {"type": "string", "format": "password"},
+                        },
+                    }
+                }
+            },
+        }
+    },
+)
+async def inspect_tdata_upload(request: Request) -> dict[str, Any]:
+    """上传 ZIP 后只分析 tdata，不写入数据库、不创建账号。"""
+    import tempfile
+
+    from .mixed_import import MixedArchiveError, extract_mixed_zip, scan_mixed_tree
+
+    raw, filename, fields = await _read_mixed_multipart(request)
+    if not raw.startswith(b"PK") and not filename.lower().endswith(".zip"):
+        raise ApiError("import_bad_archive", "请上传 ZIP 文件", status=400)
+    passcode = ((fields.get("tdata_passcode") or fields.get("tdata_password") or
+                 fields.get("password") or "").strip() or None)
+    debug = _mixed_bool(fields.get("debug"), False)
+
+    with tempfile.TemporaryDirectory(prefix="tam_tdata_inspect_") as tmp:
+        extracted = Path(tmp) / "extracted"
+        try:
+            await asyncio.to_thread(extract_mixed_zip, raw, extracted)
+        except MixedArchiveError as exc:
+            raise ApiError("import_bad_archive", str(exc), status=400) from exc
+        scanned = scan_mixed_tree(extracted)
+        rows = [_tdata_inspect_item(x, passcode, debug)
+                for x in scanned["items"] if x.get("kind") == "tdata"]
+        skipped = list(scanned.get("skipped") or [])
+        skipped.extend({"path": x.get("path"), "code": "import_unknown_format",
+                        "reason": "只支持 tdata 目录"}
+                       for x in scanned["items"] if x.get("kind") != "tdata")
+        return {
+            "filename": filename,
+            "total": len(rows),
+            "items": rows,
+            "skipped": skipped,
+            "server_now": int(time.time()),
+        }
+
+
 @app.post("/api/accounts/{account_id}/login/auto", dependencies=[Depends(auth)])
 async def login_auto(account_id: int, body: AutoLoginIn) -> dict[str, Any]:
+    if _login_busy(account_id):
+        raise HTTPException(409, "该账号已有登录任务，请等待完成")
     """从取码链接自动拉验证码并完成登录。"""
-    return await manager.auto_login(account_id, password=body.password, timeout=body.timeout)
+    try:
+        return await manager.auto_login(account_id, password=body.password, timeout=body.timeout,
+                                        query_delay=body.query_delay, poll_interval=body.poll_interval, adaptive_timing=body.adaptive_timing)
+    except Exception as exc:
+        reason = _login_failure_message(exc)
+        db.update(account_id, status="unauthorized" if "会话已失效" in reason else "error",
+                  status_note=reason, last_check_at=time.time())
+        db.log(account_id, "auto_login", False, reason)
+        raise RuntimeError(reason) from None
 
 
 @app.post("/api/batch/auto-login", dependencies=[Depends(auth)])
@@ -1522,9 +2726,54 @@ async def batch_auto_login(body: BatchAutoLoginIn) -> list[dict[str, Any]]:
     ]
 
     async def task(aid: int) -> Any:
-        return await manager.auto_login(aid, password=body.password, timeout=body.timeout)
+        try:
+            return await manager.auto_login(aid, password=body.password, timeout=body.timeout,
+                                            query_delay=body.query_delay, poll_interval=body.poll_interval, adaptive_timing=body.adaptive_timing)
+        except Exception as exc:
+            reason = _login_failure_message(exc)
+            db.update(aid, status="unauthorized" if "会话已失效" in reason else "error",
+                      status_note=reason, last_check_at=time.time())
+            db.log(aid, "auto_login", False, reason)
+            raise RuntimeError(reason) from None
 
-    return await manager.run_batch(ids, task, concurrency=body.concurrency, stagger=True)
+    concurrency = max(1, min(32, int(body.concurrency or 1)))
+    return await _run_reserved_login_batch(ids, task, concurrency, True)
+
+
+@app.post("/api/batch/logout-relogin", dependencies=[Depends(auth)])
+async def batch_logout_relogin(body: BatchLogoutReloginIn) -> list[dict[str, Any]]:
+    """清除选中账号的旧会话，然后逐号自动取码重新登录。"""
+    ids = body.account_ids or [
+        a.id for a in db.list(tag=body.tag) if a.phone and a.code_url
+    ]
+    if not ids:
+        raise HTTPException(400, "请选择账号")
+
+    async def task(aid: int) -> Any:
+        return await manager.logout_and_auto_login(
+            aid, password=body.password, timeout=body.timeout,
+            query_delay=body.query_delay, poll_interval=body.poll_interval, adaptive_timing=body.adaptive_timing)
+
+    wrapped = await _run_reserved_login_batch(ids, task, body.concurrency, False)
+    results: list[dict[str, Any]] = []
+    for item in wrapped:
+        if not item.get("ok"):
+            results.append({
+                "account_id": item.get("account_id"),
+                "ok": False,
+                "error": item.get("error") or "执行失败",
+            })
+            continue
+        result = item.get("result")
+        if isinstance(result, dict):
+            results.append(result)
+        else:
+            results.append({
+                "account_id": item.get("account_id"),
+                "ok": True,
+                "login": result,
+            })
+    return results
 
 
 class ToolCallIn(BaseModel):
@@ -1550,19 +2799,21 @@ async def logs(account_id: int | None = None, limit: int = 100) -> list[dict[str
 
 
 @app.get("/api/doctor", dependencies=[Depends(auth)])
-async def doctor_get() -> dict[str, Any]:
+async def doctor_get(request: Request) -> dict[str, Any]:
     """一键体检（不修改任何东西）。"""
     from .doctor import run_doctor
 
-    return run_doctor(fix=False)
+    server = request.scope.get("server")
+    return run_doctor(fix=False, serving=True, port=server[1] if server else None)
 
 
 @app.post("/api/doctor/fix", dependencies=[Depends(auth)])
-async def doctor_fix() -> dict[str, Any]:
+async def doctor_fix(request: Request) -> dict[str, Any]:
     """一键体检并自动修复（装依赖、补密钥、打 opentele 兼容补丁等）。"""
     from .doctor import run_doctor
 
-    return run_doctor(fix=True)
+    server = request.scope.get("server")
+    return run_doctor(fix=True, serving=True, port=server[1] if server else None)
 
 
 
@@ -1734,8 +2985,10 @@ async def system_restart(request: Request) -> dict[str, Any]:
             if os.name == "nt":
                 if os.getenv("TAM_SUPERVISED") == "1":
                     os._exit(RESTART_EXIT_CODE)
-                spawn_restart_helper(argv)
-                os._exit(0)
+                # Direct source-mode restarts must replace this process in
+                # place; spawning a helper detaches the service from the
+                # original terminal and makes the next run look orphaned.
+                os.execv(argv[0], argv)
             os.execv(argv[0], argv)
         except Exception as exc:  # noqa: BLE001
             # exec 失败则退化为退出，交给外部进程管理器拉起
@@ -1761,6 +3014,24 @@ async def system_status() -> dict[str, Any]:
         "instance_id": _instance_id,
         "restarted_at": os.getenv("TAM_RESTARTED_AT"),
     }
+
+@app.post("/api/system/shutdown", dependencies=[Depends(auth)])
+async def system_shutdown(request: Request) -> dict[str, Any]:
+    """Stop this runtime without the supervisor's hot-reload restart path."""
+    if settings.readonly:
+        raise HTTPException(403, "只读模式禁止关闭服务")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict) or not body.get("confirm"):
+        raise HTTPException(400, "必须 confirm=true")
+    record_error("用户关闭 TAO 服务", level="info", source="system", path="/api/system/shutdown")
+    async def _stop() -> None:
+        await asyncio.sleep(0.25)
+        os._exit(0)
+    _bg_tasks.append(asyncio.create_task(_stop()))
+    return {"ok": True, "message": "服务正在关闭；如需再次运行，请从原启动终端执行 start.bat"}
 
 
 
@@ -1838,7 +3109,7 @@ def _pick_accounts(ids: list[int], tag: str | None, healthy_only: bool) -> list[
     return picked
 
 
-@app.get("/api/tasks", dependencies=[Depends(auth)])
+@app.get("/api/tasks", response_model=list[TaskOut], dependencies=[Depends(auth)])
 async def list_tasks_api(limit: int = 30, status: str | None = None) -> list[dict[str, Any]]:
     out = []
     for t in tasks.list(limit=limit, status=status):
@@ -1848,7 +3119,7 @@ async def list_tasks_api(limit: int = 30, status: str | None = None) -> list[dic
     return out
 
 
-@app.get("/api/tasks/{task_id}", dependencies=[Depends(auth)])
+@app.get("/api/tasks/{task_id}", response_model=TaskOut, dependencies=[Depends(auth)])
 async def get_task_api(task_id: int, target_status: str | None = None,
                        target_limit: int = 500) -> dict[str, Any]:
     t = tasks.get(task_id)
@@ -2219,8 +3490,10 @@ def _coerce_setting(key: str, kind: str, raw: Any) -> str:
         except ValueError:
             raise HTTPException(400, f"{key} 要填整数，收到的是 {raw!r}")
         # 并发度有硬上限，别让人填个 5000 出来
-        if key in ("TAM_WORKERS", "TAM_BATCH_CONCURRENCY"):
+        if key == "TAM_WORKERS":
             v = max(1, min(v, 32))
+        elif key == "TAM_BATCH_CONCURRENCY":
+            v = max(1, v)
         elif key == "TAM_REGEN_CONCURRENCY":
             v = max(1, min(v, 8))
         elif key == "TAM_UI_OP_TIMEOUT":
@@ -2264,7 +3537,7 @@ def _coerce_setting(key: str, kind: str, raw: Any) -> str:
     return str(raw).strip()
 
 
-@app.get("/api/settings", dependencies=[Depends(auth)])
+@app.get("/api/settings", response_model=SettingsOut, dependencies=[Depends(auth)])
 async def settings_get() -> dict[str, Any]:
     """读出当前所有可调参数，按分组返回，给前端直接渲染面板。"""
     from . import doctor  # noqa: PLC0415
@@ -2287,7 +3560,7 @@ async def settings_get() -> dict[str, Any]:
             "env_path": str(doctor.ENV_PATH)}
 
 
-@app.post("/api/settings", dependencies=[Depends(auth)])
+@app.post("/api/settings", response_model=SettingsSaveOut, dependencies=[Depends(auth)])
 async def settings_save(request: Request) -> dict[str, Any]:
     """保存参数。只认白名单里的键，每个值都按类型校验过才写。"""
     from . import doctor  # noqa: PLC0415
@@ -2333,7 +3606,7 @@ async def settings_save(request: Request) -> dict[str, Any]:
     }
 
 
-@app.post("/api/settings/reset", dependencies=[Depends(auth)])
+@app.post("/api/settings/reset", response_model=SettingsResetOut, dependencies=[Depends(auth)])
 async def settings_reset(request: Request) -> dict[str, Any]:
     """把指定参数恢复默认值（不传 keys 就是全部恢复）。密钥永远不动。"""
     from . import doctor  # noqa: PLC0415
@@ -2388,12 +3661,12 @@ async def toolbox_one(account_id: int, op: str,
     try:
         result = await toolbox.run_op(manager, account_id, op, body.params)
     except toolbox.ToolboxError as exc:
-        raise HTTPException(400, str(exc))
+        raise ApiError(exc.code, str(exc), status=400, params=exc.params) from exc
     db.log(account_id, "toolbox.one", True, op)
     return {"account_id": account_id, "op": op, "result": result}
 
 
-@app.post("/api/toolbox/{op}/batch", dependencies=[Depends(auth)])
+@app.post("/api/toolbox/{op}/batch", response_model=ToolboxBatchOut, dependencies=[Depends(auth)])
 async def toolbox_batch(op: str, body: ToolboxBatchIn) -> dict[str, Any]:
     """批量执行。并发度不传走 TAM_BATCH_CONCURRENCY（参数面板里可调）。"""
     if settings.readonly or settings.dry_run:
@@ -2403,7 +3676,7 @@ async def toolbox_batch(op: str, body: ToolboxBatchIn) -> dict[str, Any]:
             manager, body.account_ids, op, body.params,
             concurrency=body.concurrency)
     except toolbox.ToolboxError as exc:
-        raise HTTPException(400, str(exc))
+        raise ApiError(exc.code, str(exc), status=400, params=exc.params) from exc
     db.log(None, "toolbox.batch", True, f"{op} x{len(body.account_ids)}")
     return result
 
@@ -2750,3 +4023,71 @@ async def ai_chat(request: Request, body: AiChatIn):
 
 if __name__ == "__main__":
     serve()
+
+
+class ProxyMigrationIn(BaseModel):
+    account_ids: list[int]
+    proxy_pool: list[str]
+    capacity: int = Field(default=0, ge=0)
+    preview: bool = True
+
+@app.get("/api/proxy/capacity", dependencies=[Depends(auth)])
+async def proxy_capacity(proxy_pool: list[str] = Query(default=[]), capacity: int = Query(default=0)) -> dict[str, Any]:
+    """Return global node usage in one query for import/allocation UIs."""
+    from .importer import normalize_proxy
+    pool = list(dict.fromkeys(normalize_proxy(p) for p in proxy_pool if p and p.strip()))
+    accounts = db.list()
+    usage = {p: 0 for p in pool}
+    for account in accounts:
+        node = normalize_proxy(account.proxy or settings.default_proxy)
+        if node in usage:
+            usage[node] += 1
+    return {"total": len(accounts), "nodes": [
+        {"proxy": p, "used": usage[p], "limit": capacity,
+         "remaining": max(0, capacity - usage[p]) if capacity else None}
+        for p in pool
+    ]}
+
+
+@app.post("/api/accounts/batch-proxy", dependencies=[Depends(auth)])
+async def batch_proxy_migration(body: ProxyMigrationIn):
+    from urllib.parse import urlsplit
+    from .importer import normalize_proxy
+    if settings.readonly or settings.dry_run:
+        raise HTTPException(403, "当前模式禁止修改代理")
+    ids = set(body.account_ids)
+    pool = list(dict.fromkeys(normalize_proxy(p) for p in body.proxy_pool if normalize_proxy(p)))
+    if not ids or not pool:
+        raise HTTPException(400, "请选择账号并填写节点")
+    for node in pool:
+        try:
+            parsed = urlsplit(node)
+            if parsed.scheme not in {"socks5", "socks4", "http"} or not parsed.hostname:
+                raise ValueError()
+            _ = parsed.port
+        except ValueError:
+            raise HTTPException(400, "节点格式错误，请使用 socks5/http URL") from None
+    accounts = db.list()
+    if ids - {a.id for a in accounts}:
+        raise HTTPException(400, "部分账号已不存在，请刷新")
+    busy = {aid for aid in ids if _login_busy(aid) or
+            aid in getattr(manager, "_pending", {}) or aid in getattr(manager, "_pending_qr", {})}
+    moving = ids - busy
+    usage = dict.fromkeys(pool, 0)
+    for a in accounts:
+        node = normalize_proxy(a.proxy or settings.default_proxy)
+        if a.id not in moving and node in usage:
+            usage[node] += 1
+    assignments = []
+    for aid in sorted(moving):
+        candidates = [p for p in pool if not body.capacity or usage[p] < body.capacity]
+        if not candidates:
+            raise HTTPException(409, "节点容量不足，未修改任何账号")
+        node = min(candidates, key=usage.get)
+        usage[node] += 1
+        assignments.append((node, time.time(), aid))
+    if not body.preview:
+        with db.conn:
+            db.conn.executemany("UPDATE accounts SET proxy=?, updated_at=? WHERE id=?", assignments)
+    return {"preview": body.preview, "count": len(assignments), "skipped_busy": sorted(busy),
+            "usage": [{"node": i + 1, "used": usage[p]} for i, p in enumerate(pool)]}

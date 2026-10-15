@@ -1,0 +1,3 @@
+GSAP 3.13.0 bundled from npm package gsap.
+License: https://gsap.com/standard-license/
+Package integrity verified against npm dist.integrity.

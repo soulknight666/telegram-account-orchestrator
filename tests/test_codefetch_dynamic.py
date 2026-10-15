@@ -105,3 +105,45 @@ def test_provider_catalog_is_extensible() -> None:
     assert hasattr(codefetch, "list_providers")
     catalog = codefetch.list_providers()
     assert [item["name"] for item in catalog] == ["tghao", "generic"]
+from tam.importer import parse_line
+from tam.codefetch import extract_code
+
+def test_feijige_phone_dash_delimiter_and_bracket_url():
+    item = parse_line('+12025550123----[https://tgapi.example.test/uuid/GetHTML')
+    assert item.phone == '+12025550123'
+    assert item.code_url == 'https://tgapi.example.test/uuid/GetHTML'
+
+def test_extract_code_from_feijige_input_value():
+    html = '<input id="code" type="text" value="48210" readonly>'
+    assert extract_code(html) == '48210'
+
+def test_wait_for_code_defaults_to_fast_polling():
+    import inspect
+    from tam.codefetch import wait_for_code
+    assert inspect.signature(wait_for_code).parameters['interval'].default <= 2.0
+
+
+def test_input_attributes_can_be_reordered():
+    assert extract_code('<input value="48210" readonly id="code">') == '48210'
+    assert extract_code('<input value="123456" id="pass2fa">') is None
+    assert extract_code('<input value=48210 name=otp>') == '48210'
+
+
+def test_poll_ignores_old_input_code(monkeypatch):
+    pages = iter(['<input id="code" value="11111">',
+                  '<input value="22222" id="code">'])
+    monkeypatch.setattr(codefetch, 'fetch_text', lambda *a, **k: next(pages))
+    result = asyncio.run(codefetch.wait_for_code(
+        'https://example.test/GetHTML', exclude='11111', interval=0))
+    assert result == '22222'
+
+
+def test_gethtml_prepare_does_not_request_page(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Preparation must not consume the refresh quota")
+
+    monkeypatch.setattr(codefetch, "fetch_text", forbidden)
+    result = asyncio.run(codefetch.prepare_code_source(
+        "https://example.test/sample/GetHTML?sample=1"))
+    assert result == {"prepared": False, "kind": "generic", "baseline": None,
+                      "pre_read_skipped": True}

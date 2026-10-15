@@ -335,7 +335,14 @@ class LauncherApp:
             return
         try:
             command = build_runtime_command(self.config)
-            self.controller.start(command, cwd=self.env_path.resolve().parent)
+            if getattr(sys, "frozen", False):
+                export_dir = Path(sys.executable).resolve().parent / "export"
+                export_dir.mkdir(parents=True, exist_ok=True)
+                command.env["TAM_EXPORT_DIR"] = str(export_dir)
+                cwd = Path(sys.executable).resolve().parent
+            else:
+                cwd = self.env_path.resolve().parent
+            self.controller.start(command, cwd=cwd)
             self._append_log("launcher", "TAO 服务正在启动…")
         except Exception as exc:  # noqa: BLE001 - converted to user-facing dialog
             self.messagebox.showerror("启动失败", str(exc))

@@ -2,6 +2,7 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 title TAM
+set TAM_HIDE_AFTER_OPEN=1
 
 REM If Windows shows "Unknown publisher", click Run.
 REM Or run unblock.bat once to clear the download flag.

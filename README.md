@@ -127,7 +127,7 @@ python -m tam.cli doctor --json # 机器可读输出（给脚本 / Agent）
 
 ## 卡商初始账号批量导入
 
-支持 `手机号|取码链接` 行格式，例：
+支持 `手机号|取码链接 或 手机号----取码链接` 行格式，例：
 
 ```
 +10000000000|https://example.invalid/code/primary/GetHTML
@@ -148,7 +148,7 @@ python -m tam.cli auto-login --tag batch1      # 批量（默认串行 + 随机�
 - 分隔符支持 `|`、`\|`、`｜`、制表符、逗号、分号；两段顺序可以颠倒；手机号缺 `+` 自动补。
 - 第三段作为备注/别名；`#` 开头与空行忽略；单行出错不中断整批，错误行集中返回。
 - 幂等：手机号已存在只补写取码链接，不重复建号。
-- 取码：`codefetch.py` 只用标准库拉取该链接（支持代理），先记录发码前的旧码作基线，再轮询直到出现不同的新码（默认 120s 超时、5s 一次），避免拿错上一次的验证码。
+- 取码：`codefetch.py` 只用标准库拉取该链接（支持代理），先记录发码前的旧码作基线，再轮询直到出现不同的新码（默认 120s 超时、1.5s 一次），避免拿错上一次的验证码。
 - 旧库自动迁移：启动时缺 `code_url` 列则自动补列。
 - 开了两步验证的号需传 `--password`（取码链接只能拿到短信码）。
 
@@ -174,6 +174,8 @@ cat sessions.txt | python -m tam.cli import-session-strings -
 - Web 支持三种方式：本机上传 `.session`/zip、服务端路径、粘贴 StringSession。
 
 API：`POST /api/accounts/import-sessions`、`POST /api/accounts/import-session-strings`、`POST /api/accounts/import-session-upload`。
+
+混合号包可使用新增的 `POST /api/import/mixed`（`multipart/form-data`，字段 `file`、`dry_run`、`label`、`proxy`、`tags`、tdata 密码与二验密码）。默认只分析，传 `dry_run=false` 才写入；同一 ZIP 中的 tdata、`.session` 会逐项处理，失败项不会中止其它账号。
 
 ## 从 Telegram Desktop tdata 导入
 
@@ -202,7 +204,7 @@ tam/
 ├── config.py     环境配置（.env）
 ├── crypto.py     scrypt + Fernet：session 静态加密
 ├── db.py         SQLite：accounts / audit_log（含 code_url 取码链接）
-├── importer.py   批量解析导入 手机号|取码链接 清单
+├── importer.py   批量解析导入 手机号|取码链接 或 手机号----取码链接 清单
 ├── codefetch.py  从取码链接抽取登录验证码（标准库，支持代理与轮询）
 ├── tdata.py / tdata_native.py   tdata 扫描与内置解析（无需 opentele）
 ├── ratelimit.py  令牌桶限速 + 人性化随机延迟
@@ -248,6 +250,7 @@ tam/
 | POST | /api/accounts/import-session-strings | 批量导入 StringSession 文本 |
 | POST | /api/accounts/import-session-upload | 浏览器上传 `.session` / zip（原始请求体） |
 | POST | /api/accounts/import-tdata | 从 tdata 目录导入（可递归扫描） |
+| POST | /api/import/mixed | 混合 ZIP 分析/导入（同步，默认 dry-run） |
 | POST | /api/batch/check、/api/batch/message、/api/batch/auto-login | 批量操作 |
 | GET | /api/logs、/api/stats | 日志与统计 |
 | GET | /api/autokick | 自动清设备的开关、周期、待处理数量 |
@@ -458,6 +461,9 @@ Web 页面右上角的令牌要和 `.env` 里的 `TAM_WEB_TOKEN` 一致，输完
 | `TAM_TOAPI_BASE` | （空） | 网页/机器人转 API 的取码链接前缀，如 `https://api.example.com` |
 | `TAM_BATCH_CONCURRENCY` | `3` | 工具箱、批量任务同时开几个号；调大易触频控 |
 | `TAM_MAX_EXTRACT_MB` | `512` | 解压后总大小上限，防 zip 炸弹 |
+| `TAM_MIXED_MAX_UPLOAD_MB` | `1024` | `/api/import/mixed` 上传体积上限 |
+| `TAM_MIXED_MAX_EXTRACT_MB` | `2048` | `/api/import/mixed` 解压总大小上限 |
+| `TAM_MIXED_MAX_FILES` | `20000` | `/api/import/mixed` 解压文件数上限 |
 | `TAM_KICK_RETRY` | `1h` | 清设备失败后的重试间隔：`45s` / `10m` / `2h` / `1h30m` |
 | `TAM_AUTO_KICK_HOURS` | `24` | 本机接管满多少小时自动踢其它设备；`0` = 关 |
 | `TAM_REGTIME_ENDPOINT` | 空 | 留空 = 注册时间分类完全离线，不外发任何号信息 |

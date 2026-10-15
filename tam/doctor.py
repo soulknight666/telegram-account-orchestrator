@@ -314,11 +314,17 @@ def check_opentele(fix: bool) -> Check:
     )
 
 
-def check_port(fix: bool, port: int = 8848) -> Check:
-    s = socket.socket()
-    s.settimeout(0.4)
-    busy = s.connect_ex(("127.0.0.1", port)) == 0
-    s.close()
+def check_port(fix: bool, port: int | None = 8848, *, serving: bool = False) -> Check:
+    # Only the in-process HTTP endpoint supplies serving=True. Receiving that
+    # request proves this service is running; its own listener is not a conflict.
+    if serving:
+        return Check(f"端口 {port}" if port is not None else "Web 服务", OK,
+                     "当前 TAO 服务正在运行（正常监听）")
+    if port is None:
+        return Check("端口", WARN, "未指定待检查端口")
+    with socket.socket() as s:
+        s.settimeout(0.4)
+        busy = s.connect_ex(("127.0.0.1", port)) == 0
     if busy:
         return Check(f"端口 {port}", WARN, "已被占用",
                      hint="可能是上一个实例还在跑。关掉旧窗口，或换端口：serve --port 8849")
@@ -342,11 +348,13 @@ CHECKS: list[Callable[[bool], Check]] = [
 ]
 
 
-def run_doctor(fix: bool = False) -> dict[str, Any]:
+def run_doctor(fix: bool = False, *, serving: bool = False,
+               port: int | None = 8848) -> dict[str, Any]:
     checks: list[Check] = []
     for fn in CHECKS:
         try:
-            checks.append(fn(fix))
+            checks.append(fn(fix, port=port, serving=serving)
+                          if fn is check_port else fn(fix))
         except BaseException as exc:  # noqa: BLE001
             checks.append(Check(getattr(fn, "__name__", "check"), FAIL,
                                 f"检查自身出错：{type(exc).__name__}: {exc}"))

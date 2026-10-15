@@ -1,44 +1,26 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const html = fs.readFileSync(path.join(__dirname, '../tam/web/index.src.html'), 'utf8');
-const source = fs.readFileSync(path.join(__dirname, '../tam/web/app.js'), 'utf8');
-const css = fs.readFileSync(path.join(__dirname, '../tam/web/styles.css'), 'utf8');
-for (const id of ['appShell', 'sideNav', 'workspace', 'bulkGroupLogin', 'bulkGroupProxy', 'bulkGroupExport', 'bulkGroupTools', 'accountDetailDrawer']) {
-  assert.ok(html.includes(`id="${id}"`), `missing ${id}`);
-}
-for (const cls of ['account-toolbar-head', 'account-filter-row', 'account-action-row']) {
-  assert.ok(html.includes(`class="${cls}"`), `missing ${cls}`);
-}
-assert.match(html, /data-nav="accounts"/);
-assert.match(html, /data-nav="tasks"/);
-assert.match(html, /id="accountDetailDrawer"[^>]*aria-hidden="true"/);
-assert.match(css, /\.side-nav/);
-assert.match(css, /\.nav-collapsed/);
-assert.match(css, /\.bulk-group/);
-assert.match(css, /\.account-detail-drawer|\.drawer/);
-assert.match(css, /\.card\[data-widget="accounts"\] \.toolbar\{position:static/);
-assert.match(css, /\.quick-filters\{[^}]*min-width:0/);
-assert.match(source, /data-task-id/);
-assert.match(source, /aria-live="polite"/);
-
-const navBlock = source.slice(source.indexOf('/* ---------- 工作台导航'), source.indexOf('/* ---------- 布局引擎'));
-const shell = {classList:{toggle(name, on){this[name] = on;}}};
-const navNodes = ['accounts','tasks','toolbox','ziptools','logs','settings'].map(view => ({dataset:{nav:view}, classList:{toggle(){}}, setAttribute(name, value){this[name] = value;}}));
-const viewNodes = ['accounts','tasks','toolbox','ziptools','logs','settings'].map(view => ({dataset:{view}, classList:{toggle(name, on){this[name] = on;}}, setAttribute(name, value){this[name] = value;}}));
-const storage = new Map();
-const $ = selector => selector === '#appShell' ? shell : null;
-const ctx = vm.createContext({
-  $, document:{querySelector(selector){return selector === '#appShell' ? shell : null;}, querySelectorAll(selector){return selector === '[data-nav]' ? navNodes : viewNodes;}},
-  localStorage:{getItem:key => storage.get(key) || null, setItem:(key, value) => storage.set(key, value)},
-  window:{innerWidth:1280}, loadTasks:()=>{}, loadOps:()=>{}, renderZt:()=>{}, loadSettings:()=>{}, renderLayout:()=>{},
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const html=fs.readFileSync('tam/web/index.src.html','utf8');
+const source=fs.readFileSync('tam/web/app.js','utf8');
+const css=fs.readFileSync('tam/web/styles.css','utf8');
+for(const id of ['appShell','mainNav','workspace','accountOverview','filterPop','bulkMenu','accountDetailDrawer'])assert.ok(html.includes(`id="${id}"`),id);
+for(const v of ['accounts','tasks','leads','toolbox','logs','settings'])assert.ok(html.includes(`data-view="${v}"`),v);
+assert.match(html,/data-widget="leads" data-view="leads"/);
+assert.match(css,/height:100dvh;overflow:hidden/);
+assert.match(css,/\.content\{[^}]*min-width:0;min-height:0;overflow:auto/);
+assert.match(source,/data-task-id/);assert.match(source,/aria-live="polite"/);
+for(const id of ['mImport','mTdata','mSession','mChats'])assert.match(html,new RegExp(`<div class="modal modal-wide" id="${id}"`));
+const start=source.indexOf('function loadViewPrefs()'),end=source.indexOf('/* ---------- 渲染 ---------- */');
+const nodes=['accounts','tasks','leads','toolbox','logs','settings'].map(v=>({dataset:{view:v,nav:v},classList:{toggle(n,on){this[n]=on}},setAttribute(n,v){this[n]=v}}));
+const storage=new Map([['tam.view','ziptools']]);let motionCount=0;
+const ctx=vm.createContext({
+ VIEW_NAMES:{accounts:'账号清单',tasks:'任务中心',leads:'线索库',toolbox:'工具',logs:'日志',settings:'设置'},currentView:'accounts',viewKey:'tam.view',MORE_VIEWS:['logs','settings'],
+ document:{querySelectorAll:s=>s==='[data-nav-group="more"]'?[]:nodes,body:{classList:{toggle(){}}}},
+ localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},$:()=>({scrollTop:9}),
+ loadTasks(){},loadLeads(){},loadOps(){},renderZt(){},loadSettings(){},closeMenus(){},TAO_MOTION:{view(){motionCount++}}
 });
-vm.runInContext(navBlock, ctx);
-vm.runInContext("switchView('tasks')", ctx);
-assert.equal(vm.runInContext('currentView', ctx), 'tasks');
-assert.equal(storage.get('tam.view'), 'tasks');
-assert.equal(viewNodes.find(x => x.dataset.view === 'accounts').classList['view-hidden'], true);
-vm.runInContext('toggleSideNav()', ctx);
-assert.equal(vm.runInContext('navCollapsed', ctx), true);
-console.log('layout shell contract passed');
+vm.runInContext(source.slice(start,end),ctx);
+vm.runInContext('loadViewPrefs()',ctx);assert.equal(ctx.currentView,'toolbox');
+vm.runInContext("switchView('tasks')",ctx);assert.equal(ctx.currentView,'tasks');assert.equal(storage.get('tam.view'),'tasks');
+assert.equal(nodes.find(n=>n.dataset.view==='accounts').classList['view-hidden'],true);
+vm.runInContext("switchView('ziptools')",ctx);assert.equal(ctx.currentView,'toolbox');assert.equal(motionCount,2);
+console.log('responsive workspace navigation contract passed');

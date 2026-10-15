@@ -4,6 +4,22 @@ All notable changes follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-15
+
+### Added
+
+- Add unified mixed import, batch preview, structured error codes, and one-stop workflow tooling.
+- Add release-ready CSP-protected Web UI assets and settings navigation from the command palette.
+
+### Changed
+
+- Improve account operations, login timing, code retrieval, proxy capacity handling, and large-list exports.
+- Refresh the Web UI layout, accessibility behavior, release compression, and hashed asset delivery.
+
+### Fixed
+
+- Preserve settings focus and highlight during asynchronous settings reloads and make settings search filter reliably.
+
 ## [0.3.1] - 2026-08-22
 
 ### Fixed

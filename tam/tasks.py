@@ -13,6 +13,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+from .errors import error_payload, enrich_failure
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -35,6 +36,9 @@ CREATE TABLE IF NOT EXISTS task_targets (
     account_id INTEGER,
     status TEXT NOT NULL,
     detail TEXT,
+    code TEXT,
+    params TEXT,
+    retry_after INTEGER,
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_targets_task ON task_targets(task_id, seq);
@@ -111,11 +115,6 @@ Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | str | None]]
 class TaskStore:
     """任务持久化。"""
 
-    def __init__(self, conn: Any) -> None:
-        self.conn = conn
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
-
     # --- 写 ---
     def create(self, kind: str, title: str, targets: list[str],
                params: dict[str, Any] | None = None) -> Task:
@@ -137,18 +136,70 @@ class TaskStore:
         assert task is not None
         return task
 
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+        self.conn.executescript(SCHEMA)
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(task_targets)")}
+        for name, ddl in (("code", "TEXT"), ("params", "TEXT"), ("retry_after", "INTEGER")):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE task_targets ADD COLUMN {name} {ddl}")
+        self.conn.commit()
+        self._progress_pending: dict[int, tuple[str, int | None]] = {}
+        self._progress_handle: asyncio.TimerHandle | None = None
+
+    def status(self, task_id: int) -> str | None:
+        row = self.conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        return row["status"] if row else None
+
+    def mark_progress(self, target_id: int, detail: str = "", account_id: int | None = None) -> None:
+        """合并高频进度更新，最多每 500ms 写入一次。"""
+        self._progress_pending[target_id] = ((detail or "")[:1000], account_id)
+        if self._progress_handle is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.flush_progress()
+            else:
+                self._progress_handle = loop.call_later(0.5, self.flush_progress)
+
+    def flush_progress(self) -> None:
+        handle = self._progress_handle
+        self._progress_handle = None
+        if handle is not None and not handle.cancelled():
+            handle.cancel()
+        pending = self._progress_pending
+        self._progress_pending = {}
+        if not pending:
+            return
+        now = time.time()
+        self.conn.executemany(
+            "UPDATE task_targets SET detail=?, account_id=COALESCE(?, account_id), updated_at=? "
+            "WHERE id=? AND status='running'",
+            [(detail, aid, now, target_id) for target_id, (detail, aid) in pending.items()],
+        )
+        self.conn.commit()
+
     def mark_target(self, target_id: int, status: str, detail: str = "",
-                    account_id: int | None = None) -> None:
+                    account_id: int | None = None, *, code: str | None = None,
+                    params: dict[str, Any] | None = None,
+                    retry_after: int | None = None) -> None:
+        self._progress_pending.pop(target_id, None)
+        if not self._progress_pending and self._progress_handle is not None:
+            self._progress_handle.cancel(); self._progress_handle = None
         if account_id is None:
             self.conn.execute(
-                "UPDATE task_targets SET status=?, detail=?, updated_at=? WHERE id=?",
-                (status, (detail or "")[:1000], time.time(), target_id),
+                "UPDATE task_targets SET status=?, detail=?, code=?, params=?, retry_after=?, updated_at=? WHERE id=?",
+                (status, (detail or "")[:1000], code,
+                 json.dumps(params, ensure_ascii=False) if params else None,
+                 retry_after, time.time(), target_id),
             )
         else:
             self.conn.execute(
-                "UPDATE task_targets SET status=?, detail=?, account_id=?, updated_at=?"
+                "UPDATE task_targets SET status=?, detail=?, code=?, params=?, retry_after=?, account_id=?, updated_at=?"
                 " WHERE id=?",
-                (status, (detail or "")[:1000], account_id, time.time(), target_id),
+                (status, (detail or "")[:1000], code,
+                 json.dumps(params, ensure_ascii=False) if params else None,
+                 retry_after, account_id, time.time(), target_id),
             )
         self.conn.commit()
 
@@ -239,6 +290,11 @@ class TaskStore:
         out = []
         for r in rows:
             d = dict(r)
+            if d.get("params"):
+                try:
+                    d["params"] = json.loads(d["params"])
+                except (TypeError, ValueError):
+                    pass
             d["status_cn"] = TARGET_CN.get(d["status"], d["status"])
             out.append(d)
         return out
@@ -266,8 +322,8 @@ class TaskRunner:
         return self.store.request_stop(task_id)
 
     def _stopping(self, task_id: int) -> bool:
-        t = self.store.get(task_id)
-        return bool(t and t.status in (STOPPING, STOPPED))
+        status = self.store.status(task_id)
+        return status in (STOPPING, STOPPED)
 
     async def run(self, task_id: int, handler: Handler,
                   concurrency: int = 1, delay: float = 0.0,
@@ -276,7 +332,8 @@ class TaskRunner:
         task = self.store.get(task_id)
         if task is None:
             return {"ok": False, "error": "任务不存在"}
-        self.store.set_status(task_id, RUNNING)
+        if not self._stopping(task_id):
+            self.store.set_status(task_id, RUNNING)
         rows = self.store.pending(task_id)
         sem = asyncio.Semaphore(max(1, concurrency))
         stopped = False
@@ -290,6 +347,9 @@ class TaskRunner:
                     return
                 if delay and idx:
                     await asyncio.sleep(delay * random.uniform(0.8, 1.2))
+                    if self._stopping(task_id):
+                        stopped = True
+                        return
                 self.store.mark_target(row["id"], "running")
                 try:
                     if tmo:
@@ -300,15 +360,25 @@ class TaskRunner:
                     self.store.mark_target(
                         row["id"], "fail",
                         f"单号超时（{int(tmo or 0)}s）已跳过，请检查代理/网络后重试",
+                        code="network_timeout",
                     )
                     return
                 except Exception as e:  # noqa: BLE001
+                    info = error_payload(e)
                     self.store.mark_target(
-                        row["id"], "fail", f"{type(e).__name__}: {e}")
+                        row["id"], "fail", f"{type(e).__name__}: {e}", code=info["code"],
+                        params=info.get("params"), retry_after=info.get("retry_after"))
                     return
                 if isinstance(res, dict):
                     detail = str(res.get("detail") or "")
                     aid = res.get("account_id")
+                    if res.get("ok") is False:
+                        info = enrich_failure(res, code=res.get("code"))
+                        self.store.mark_target(
+                            row["id"], "fail", str(res.get("error") or detail),
+                            account_id=aid, code=info["code"],
+                            params=info.get("params"), retry_after=info.get("retry_after"))
+                        return
                 else:
                     detail, aid = str(res or ""), None
                 self.store.mark_target(row["id"], "ok", detail, account_id=aid)
@@ -321,7 +391,26 @@ class TaskRunner:
                         break
                     await one(row, i)
             else:
-                await asyncio.gather(*(one(r, i) for i, r in enumerate(rows)))
+                # 固定数量 worker，避免为上万目标一次性创建上万个协程。
+                cursor = 0
+                cursor_lock = asyncio.Lock()
+                async def worker() -> None:
+                    nonlocal cursor
+                    while True:
+                        async with cursor_lock:
+                            if cursor >= len(rows):
+                                return
+                            i = cursor; cursor += 1
+                        await one(rows[i], i)
+                workers = [asyncio.create_task(worker())
+                           for _ in range(min(max(1, concurrency), len(rows)))]
+                try:
+                    await asyncio.gather(*workers)
+                except BaseException:
+                    for worker_task in workers:
+                        worker_task.cancel()
+                    await asyncio.gather(*workers, return_exceptions=True)
+                    raise
         except Exception:  # noqa: BLE001
             # 兜底：不让整任务无终态
             cur = self.store.get(task_id)
@@ -332,7 +421,8 @@ class TaskRunner:
         left = self.store.pending(task_id)
         if left or stopped or self._stopping(task_id):
             for r in left:
-                self.store.mark_target(r["id"], "skipped", "任务已停止")
+                self.store.mark_target(r["id"], "skipped", "任务已停止",
+                                       code="task_cancelled")
             self.store.set_status(task_id, STOPPED)
         else:
             cur = self.store.get(task_id)
@@ -344,7 +434,7 @@ class TaskRunner:
 
     def spawn(self, task_id: int, handler: Handler,
               concurrency: int = 1, delay: float = 0.0,
-              target_timeout: float | None = 180.0) -> bool:
+              target_timeout: float | None = 180.0, on_finished=None) -> bool:
         """后台跑任务，立即返回。异常会写入任务失败状态并清理 live。"""
         if self.is_running(task_id):
             return False
@@ -369,6 +459,8 @@ class TaskRunner:
                     pass
             finally:
                 self._live.pop(task_id, None)
+                if on_finished is not None:
+                    on_finished()
 
         self._live[task_id] = loop.create_task(_wrap())
         return True

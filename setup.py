@@ -535,6 +535,36 @@ def main() -> None:
         info(f"以后手动启动：{py} -m tam.cli run --deploy {deploy} --frontend {frontend}")
         return
 
+    # 若已有 TAO 实例在监听，直接复用并打开页面，避免重复启动产生端口误报。
+    if frontend in ("web", "both"):
+        import socket
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(0.4)
+        occupied = probe.connect_ex(("127.0.0.1", args.port)) == 0
+        probe.close()
+        if occupied:
+            # 8848 是 TAO 的专用默认端口：自动结束旧实例，确保加载当前代码。
+            # 若占用者不是 Python/TAO，则保留并提示，避免误杀其他服务。
+            old_pids = []
+            try:
+                net = subprocess.check_output(["netstat", "-ano"], text=True, errors="ignore")
+                for line in net.splitlines():
+                    cols = line.split()
+                    if len(cols) >= 5 and cols[1].endswith(f":{args.port}") and cols[3] == "LISTENING":
+                        old_pids.append(cols[4])
+                for pid in dict.fromkeys(old_pids):
+                    name = subprocess.check_output(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], text=True, errors="ignore")
+                    if "python" in name.lower():
+                        subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        info(f"已关闭旧 TAO 进程（PID {pid}），准备启动当前版本")
+                        time.sleep(0.5)
+                    else:
+                        warn(f"端口 {args.port} 被非 TAO 程序占用；请关闭占用程序，或使用 --port 8849")
+                        return
+            except Exception:
+                warn(f"端口 {args.port} 已被占用；请关闭旧窗口，或使用 --port 8849")
+                return
+
     cmd = [
         str(py), "-m", "tam.cli", "run",
         "--deploy", deploy,
@@ -551,7 +581,12 @@ def main() -> None:
     if frontend in ("web", "both") and deploy == "local":
         time.sleep(2.5)
         try:
-            webbrowser.open(url)
+            opened = webbrowser.open(url)
+            if opened and proc.poll() is None and os.name == "nt" and os.getenv("TAM_HIDE_AFTER_OPEN") == "1":
+                import ctypes
+                hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+                if hwnd:
+                    ctypes.windll.user32.ShowWindow(hwnd, 0)
         except Exception:
             pass
     try:
@@ -559,6 +594,12 @@ def main() -> None:
     except KeyboardInterrupt:
         proc.terminate()
         print("\n  已停止。")
+    finally:
+        if os.name == "nt" and os.getenv("TAM_HIDE_AFTER_OPEN") == "1":
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 5)
 
 
 

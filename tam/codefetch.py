@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from html.parser import HTMLParser
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) tam/1.2"
 _TAG = re.compile(r"<[^>]+>")
@@ -25,6 +26,27 @@ _TAG = re.compile(r"<[^>]+>")
 KEYED = re.compile(
     r"(?:login\s*code|code|验证码|登录码|コード)\D{0,20}?(\d{5,6})", re.I)
 LOOSE = re.compile(r"(?<!\d)(\d{5,6})(?!\d)")
+class CodeSourceCooldown(RuntimeError):
+    def __init__(self, seconds: float):
+        self.seconds = max(1.0, float(seconds))
+        super().__init__(f"取码页面冷却中，请 {self.seconds:.0f} 秒后再查询")
+
+
+class _CodeInputParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.code: str | None = None
+
+    def handle_starttag(self, tag, attrs) -> None:
+        if tag != "input" or self.code is not None:
+            return
+        fields = dict(attrs)
+        names = {"code", "otp", "login_code", "verification_code"}
+        if any((fields.get(key) or "").lower().replace("-", "_") in names
+               for key in ("id", "name")):
+            value = (fields.get("value") or "").strip()
+            if re.fullmatch(r"[0-9]{5,6}", value):
+                self.code = value
 
 
 def strip_html(raw: str) -> str:
@@ -61,6 +83,59 @@ def _extract_json_code(value: object) -> str | None:
     return None
 
 
+def extract_twofa(raw: str) -> str | None:
+    """提取页面明确标注的二验字段。"""
+    keys={"twofa","two_factor","two_factor_password","2fa","password","twofa_password", "pass2fa", "password2fa"}
+    if raw.lstrip().startswith(("{","[")):
+        try:
+            value=json.loads(raw)
+            def walk(obj):
+                if isinstance(obj,dict):
+                    for k,v in obj.items():
+                        if str(k).lower().replace("-","_") in keys and isinstance(v,str):
+                            v=v.strip()
+                            if 1<=len(v)<=128:return v
+                        found=walk(v)
+                        if found:return found
+                elif isinstance(obj,list):
+                    for v in obj:
+                        found=walk(v)
+                        if found:return found
+                return None
+            found=walk(value)
+            if found:return found
+        except json.JSONDecodeError: pass
+    parser=_TwofaInputParser(); parser.feed(raw)
+    if parser.password is not None:return parser.password
+    # 飞机格 GetHTML 页面以可见标签呈现“2fa/密码”，值通常是同一块文本中的数字。
+    text = strip_html(raw)
+    match = re.search(r"2\s*fa\s*[\/：:]?\s*(?:密码|password)?\s*[：:]?\s*([A-Za-z0-9._!@#$%\-]{1,128})", text, re.I)
+    if match:
+        value = match.group(1).strip()
+        if value and value.lower() not in {"设备验证码", "验证码", "code"}:
+            return value
+    return None
+
+class _TwofaInputParser(HTMLParser):
+    def __init__(self): super().__init__(); self.password=None
+    def handle_starttag(self,tag,attrs):
+        if tag not in {"input","meta"} or self.password is not None:return
+        f={str(k).lower().replace("-","_"):(v or "") for k,v in attrs}
+        identifiers = [str(f.get(k) or "").lower().replace("-", "_")
+                      for k in ("name", "id", "property")]
+        if any(name in {"twofa","two_factor","two_factor_password","2fa","password","twofa_password", "pass2fa", "password2fa"} for name in identifiers):
+            v=(f.get("value") or f.get("content") or "").strip()
+            if 1<=len(v)<=128:self.password=v
+
+async def read_page(url: str, timeout: float = 15.0, proxy: str | None = None):
+    raw=await asyncio.to_thread(fetch_text,url,timeout,proxy)
+    if urllib.parse.urlsplit(url).path.rstrip("/").lower().endswith("/gethtml"):
+        cooldown = re.search(r"(?:wait|等待|刷新)[^0-9]{0,16}(\d{1,4})\s*(?:s|秒)", strip_html(raw), re.I)
+        if cooldown:
+            raise CodeSourceCooldown(float(cooldown.group(1)))
+    provider=detect_provider(url,raw)
+    return provider.read(url,raw), extract_twofa(raw)
+
 def extract_code(raw: str) -> str | None:
     """从页面文本中抽取验证码。若多个则取最前面的（平台通常最新在上）。"""
     if raw.lstrip().startswith(("{", "[")):
@@ -68,6 +143,10 @@ def extract_code(raw: str) -> str | None:
             return _extract_json_code(json.loads(raw))
         except json.JSONDecodeError:
             pass
+    parser = _CodeInputParser()
+    parser.feed(raw)
+    if parser.code:
+        return parser.code
     text = strip_html(raw)
     m = KEYED.search(text)
     if m:
@@ -81,7 +160,7 @@ def fetch_text(url: str, timeout: float = 15.0, proxy: str | None = None, *,
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {})
     )
-    request_headers = {"User-Agent": UA, "Accept": "*/*", **(headers or {})}
+    request_headers = {"User-Agent": UA, "Accept": "*/*", "Cache-Control": "no-cache", "Pragma": "no-cache", **(headers or {})}
     req = urllib.request.Request(url, headers=request_headers, method=method)
     with opener.open(req, timeout=timeout) as resp:
         data = resp.read()
@@ -238,9 +317,15 @@ async def probe_code_source(url: str, timeout: float = 15.0,
 async def prepare_code_source(url: str, timeout: float = 15.0,
                               proxy: str | None = None) -> dict[str, object]:
     """在 Telegram 发码前按 provider 执行必要准备。"""
+    # GetHTML reads consume the provider's refresh quota, even before code delivery.
+    if urllib.parse.urlsplit(url).path.rstrip("/").lower().endswith("/gethtml"):
+        return {"prepared": False, "kind": "generic", "baseline": None,
+                "pre_read_skipped": True}
     page = await asyncio.to_thread(fetch_text, url, timeout, proxy)
     provider = detect_provider(url, page)
-    return await provider.prepare(url, page, timeout, proxy)
+    result = await provider.prepare(url, page, timeout, proxy)
+    result["baseline"] = provider.read(url, page)
+    return result
 
 
 async def read_code(url: str, timeout: float = 15.0, proxy: str | None = None) -> str | None:
@@ -249,19 +334,52 @@ async def read_code(url: str, timeout: float = 15.0, proxy: str | None = None) -
     return detect_provider(url, raw).read(url, raw)
 
 
+async def wait_for_code_details(url: str, exclude: str | None = None, timeout: float = 120.0, interval: float = 1.5, proxy: str | None = None, progress=None):
+    deadline=time.time()+timeout
+    last_err = None
+    while time.time()<deadline:
+        try:
+            if progress: progress("正在查询验证码")
+            code,password=await read_page(url,proxy=proxy)
+            if code and code!=exclude:return code,password
+        except Exception as exc:
+            last_err = exc
+            retry = getattr(getattr(exc, "headers", None), "get", lambda *_: None)("Retry-After")
+            if retry is None and isinstance(exc, CodeSourceCooldown):
+                retry = exc.seconds
+            try:
+                wait = max(float(interval), float(retry or 0))
+            except (TypeError, ValueError):
+                wait = float(interval)
+        else:
+            wait = float(interval)
+        if urllib.parse.urlsplit(url).path.rstrip("/").lower().endswith("/gethtml"):
+            wait = max(wait, 60.0)
+        await asyncio.sleep(min(wait,max(0,deadline-time.time())))
+    suffix = f"（最后错误：{type(last_err).__name__}）" if last_err else ""
+    raise TimeoutError(f"{timeout:.0f}s 内未从取码链接获得新验证码" + suffix)
+
 async def wait_for_code(url: str, exclude: str | None = None, timeout: float = 120.0,
-                        interval: float = 5.0, proxy: str | None = None) -> str:
+                        interval: float = 1.5, proxy: str | None = None, progress=None) -> str:
     """轮询直到出现与 exclude 不同的新验证码。超时抛 TimeoutError。"""
     deadline = time.time() + timeout
     last_err: Exception | None = None
     while time.time() < deadline:
         try:
-            code = await read_code(url, proxy=proxy)
+            if progress:
+                progress("正在查询验证码")
+            code, _ = await read_page(url, proxy=proxy)
             if code and code != exclude:
                 return code
         except Exception as exc:  # 网络抖动不中断轮询
             last_err = exc
-        await asyncio.sleep(interval)
+        remaining = min(interval, max(0, deadline - time.time()))
+        while remaining > 0:
+            if progress:
+                progress(f"等待下次查询：{remaining:.0f} 秒")
+            step = min(1, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
     raise TimeoutError(
         f"{timeout:.0f}s 内未从取码链接获得新验证码"
         + (f"（最后错误：{last_err!r}）" if last_err else "")

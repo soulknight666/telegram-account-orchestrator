@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import os
 import time
 from dataclasses import dataclass
@@ -18,7 +19,14 @@ from urllib.parse import urlparse
 from .config import Settings
 from .crypto import decrypt, encrypt
 from .db import Account, Database
+from .errors import enrich_failure, error_payload
 from .ratelimit import RateLimiter, human_delay
+
+_login_client_lease = ContextVar('tao_login_client_lease', default=None)
+
+
+class SessionUnauthorizedError(RuntimeError):
+    """The saved session is not authorized, rather than a transport failure."""
 
 
 def render_variables(text: str, variables: dict[str, Any] | None) -> str:
@@ -315,6 +323,9 @@ class AccountManager:
         self._pending_qr: dict[int, PendingQrLogin] = {}
         self._locks: dict[int, asyncio.Lock] = {}  # 账号级并发控制
         self._db_lock = asyncio.Lock()  # 数据库写入并发控制
+        # Shared gate prevents several simultaneous batch tasks from multiplying
+        # Telegram connections beyond the configured process ceiling.
+        self._batch_gate = asyncio.Semaphore(32)
 
     # ---------- 内部工具 ----------
     def _lock(self, account_id: int) -> asyncio.Lock:
@@ -450,8 +461,12 @@ class AccountManager:
         if acc is None or not acc.phone:
             raise RuntimeError("账号不存在或未填写手机号")
         client = self._build_client(acc)
-        await client.connect()
-        sent = await client.send_code_request(acc.phone)
+        try:
+            await client.connect()
+            sent = await client.send_code_request(acc.phone)
+        except BaseException:
+            await client.disconnect()
+            raise
         self._pending[account_id] = PendingLogin(
             account_id, acc.phone, sent.phone_code_hash, client, time.time()
         )
@@ -459,7 +474,8 @@ class AccountManager:
         return {"account_id": account_id, "phone": acc.phone, "code_sent": True}
 
     async def sign_in(
-        self, account_id: int, code: str, password: str | None = None
+        self, account_id: int, code: str, password: str | None = None, *,
+        retain_invalid_code: bool = False
     ) -> dict[str, Any]:
         from telethon.errors import SessionPasswordNeededError
 
@@ -468,6 +484,9 @@ class AccountManager:
             raise RuntimeError("没有待完成的登录，请先发送验证码")
         acc = self.db.get(account_id)
         client = pending.client
+        verified_password = None
+        keep_pending = False
+        retained = False
         try:
             try:
                 await client.sign_in(
@@ -477,11 +496,18 @@ class AccountManager:
                 )
             except SessionPasswordNeededError:
                 if not password:
+                    keep_pending = True
                     return {"need_password": True}
                 await client.sign_in(password=password)
+                verified_password = password
 
             me = await client.get_me()
             self._save_session(acc, client.session.save())
+            twofa_fields = {}
+            if verified_password is not None:
+                from .crypto import encrypt
+                twofa_fields = {"twofa_enc": encrypt(self.s.master_key, verified_password),
+                                "has_2fa": 1}
             self.db.update(
                 account_id,
                 user_id=me.id,
@@ -490,15 +516,25 @@ class AccountManager:
                 status="active",
                 status_note=None,
                 last_check_at=time.time(),
+                **twofa_fields,
             )
             self.db.log(account_id, "sign_in", True, f"user_id={me.id}")
+            lease = self._current_login_lease(account_id)
+            if lease is not None:
+                lease.client = client
+                lease.saved_session = client.session.save()
+                retained = True
             return {"ok": True, "user_id": me.id, "username": me.username}
         except Exception as exc:
+            from telethon.errors import PhoneCodeInvalidError
+            keep_pending = retain_invalid_code and isinstance(exc, PhoneCodeInvalidError)
             self.db.log(account_id, "sign_in", False, repr(exc))
             raise
         finally:
-            self._pending.pop(account_id, None)
-            await client.disconnect()
+            if not keep_pending:
+                self._pending.pop(account_id, None)
+                if not retained:
+                    await client.disconnect()
 
 
     # ---------- 扫码登录（官方 App 扫码，无需本机收短信）----------
@@ -764,32 +800,141 @@ class AccountManager:
         return {"ok": True, "cancelled": had, "account_id": account_id}
 
 
+    async def login_session_authorized(self, account_id: int) -> bool:
+        acc = self.db.get(account_id)
+        if not acc or not acc.session_enc:
+            return False
+        session = self._load_session(acc)
+        client = self._build_client(acc, session)
+        retained = False
+        try:
+            await asyncio.wait_for(client.connect(), timeout=15)
+            valid = await asyncio.wait_for(client.is_user_authorized(), timeout=15)
+            lease = self._current_login_lease(account_id)
+            if valid and lease is not None:
+                lease.client = client
+                lease.saved_session = session
+                retained = True
+            return valid
+        finally:
+            if not retained:
+                await client.disconnect()
+
+    def _current_login_lease(self, account_id):
+        lease = _login_client_lease.get()
+        return lease if lease and lease.mgr is self and lease.account_id == account_id else None
+
+    def reuse_login_client(self, account_id):
+        """Scope a fresh verified client to one-stop login + password change."""
+        return _LoginClientLease(self, account_id)
+
     async def auto_login(self, account_id: int, password: str | None = None,
-                         timeout: float = 120.0) -> dict[str, Any]:
+                         timeout: float = 120.0, query_delay: float = 60.0,
+                         poll_interval: float = 60.0, progress=None, adaptive_timing: bool = True, prefetched: bool = False) -> dict[str, Any]:
+        active = self.__dict__.setdefault("_auto_login_active", set())
+        if account_id in active:
+            raise RuntimeError("该账号已有自动登录正在执行")
+        active.add(account_id)
+        try:
+            return await self._auto_login_impl(account_id, password, timeout,
+                                                query_delay, poll_interval, progress, adaptive_timing, prefetched)
+        except BaseException:
+            pending = getattr(self, "_pending", {}).pop(account_id, None)
+            if pending is not None:
+                await pending.client.disconnect()
+            raise
+        finally:
+            active.discard(account_id)
+
+    async def _auto_login_impl(self, account_id, password, timeout,
+                               query_delay, poll_interval, progress, adaptive_timing=True, prefetched=False):
         """全自动登录：发码 -> 从发卡平台取码链接轮询新码 -> 完成登录。
 
         适配导入格式：+1812xxxxxxx|https://tgapi.xxx/@user/<uuid>/GetHTML
-        若帐号开了两步验证，必须预先传 password。
+        若帐号开了两步验证，显式 password 优先，否则使用本地加密保存的密码。
         """
-        from .codefetch import prepare_code_source, read_code, wait_for_code
+        from .codefetch import prepare_code_source, wait_for_code_details
+        page_password_used = False
 
         acc = self.db.get(account_id)
         if acc is None:
             raise RuntimeError("账号不存在")
         if not acc.code_url:
             raise RuntimeError("该账号未配置取码链接 code_url")
+        if not (password or "").strip() and getattr(acc, "twofa_enc", None):
+            try:
+                from .crypto import decrypt
+                password = decrypt(self.s.master_key, acc.twofa_enc)
+            except Exception:  # noqa: BLE001
+                password = None
         proxy = acc.proxy or self.s.default_proxy
-        try:  # 基线：记住发码前页面上的旧码，避免误用
-            baseline = await read_code(acc.code_url, proxy=proxy)
-        except Exception:
-            baseline = None
-        prepared = await prepare_code_source(acc.code_url, proxy=proxy)
+        if progress:
+            progress("准备取码服务并连接 Telegram")
+        # 先建立取码监控，再发送验证码，避免基线读取竞态。
+        if not prefetched:
+            prepared = await prepare_code_source(acc.code_url, proxy=proxy)
+            await self.send_code(account_id)
+        else:
+            prepared = await prepare_code_source(acc.code_url, proxy=proxy)
+        baseline = prepared.get("baseline")
         if prepared.get("prepared"):
             self.db.log(account_id, "fetch_code", True, "dynamic_monitor_started")
-        await self.send_code(account_id)
         try:
-            code = await wait_for_code(acc.code_url, exclude=baseline,
-                                       timeout=timeout, proxy=proxy)
+            from .login_timing import LoginTiming
+            timing = LoginTiming(self.db, acc.code_url, query_delay, poll_interval, adaptive_timing,
+                                 float(prepared.get("poll_seconds") or 0))
+            # 首次取码使用用户设置的等待时间；interval 只约束后续刷新。
+            # 旧逻辑把首次等待强制抬到 60s，导致一条龙每一波都无谓停顿。
+            # The first query is controlled by the user's delay.  The provider
+            # refresh floor applies only to subsequent polls; forcing the
+            # interval here made every one-stop account wait 60 seconds.
+            delay = max(0.0, timing.delay)
+            if progress:
+                while delay > 0:
+                    progress(f"验证码已发送，首次查询倒计时：{delay:.0f} 秒")
+                    step = min(1, delay)
+                    await asyncio.sleep(step)
+                    delay -= step
+            else:
+                await asyncio.sleep(delay)
+            from telethon.errors import PhoneCodeInvalidError
+            deadline = time.monotonic() + timeout
+            misses = 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("等待有效验证码超时")
+                code, page_password = await wait_for_code_details(acc.code_url, exclude=baseline,
+                                           timeout=remaining, proxy=proxy, interval=poll_interval,
+                                           **({"progress": progress} if progress else {}))
+                if progress:
+                    progress("已取得验证码，正在登录")
+                try:
+                    if page_password and not password:
+                        password = page_password
+                        page_password_used = True
+                    res = await self.sign_in(account_id, code, password, retain_invalid_code=True)
+                    if res.get("need_password") and page_password and not page_password_used:
+                        password = page_password
+                        page_password_used = True
+                        res = await self.sign_in(account_id, code, password, retain_invalid_code=True)
+                    if adaptive_timing and not res.get("need_password"):
+                        timing.success(time.monotonic() - (deadline - timeout), misses)
+                    break
+                except Exception as exc:
+                    if page_password_used and type(exc).__name__ == "PasswordHashInvalidError":
+                        raise RuntimeError("2FA不匹配：链接页面提供的二验密码无效") from exc
+                    if not isinstance(exc, PhoneCodeInvalidError):
+                        raise
+                    misses += 1
+                    baseline = code
+                    remaining = min(poll_interval, max(0, deadline - time.monotonic()))
+                    while remaining > 0:
+                        if progress:
+                            progress(f"验证码无效，等待新码：{remaining:.0f} 秒")
+                        step = min(1, remaining)
+                        await asyncio.sleep(step)
+                        remaining -= step
         except TimeoutError as exc:
             self.db.log(account_id, "auto_login", False, str(exc))
             pending = self._pending.pop(account_id, None)
@@ -797,9 +942,16 @@ class AccountManager:
                 await pending.client.disconnect()
             raise
         self.db.log(account_id, "fetch_code", True, f"code_len={len(code)}")
-        res = await self.sign_in(account_id, code, password)
         if res.get("need_password"):
             raise RuntimeError("该账号开启了两步验证，请带 password 重试")
+        # 链接页提供的旧 2FA 已通过 Telegram 校验；加密暂存，供一条龙后续远端改密使用。
+        if page_password_used and password:
+            try:
+                from .crypto import encrypt
+                self.db.update(account_id, twofa_enc=encrypt(self.s.master_key, password), has_2fa=1)
+                self.db.log(account_id, "twofa_capture", True, "captured_from_code_page")
+            except Exception as exc:  # 登录已成功，记录保存失败但不回滚会话
+                self.db.log(account_id, "twofa_capture", False, type(exc).__name__)
         return res
 
     async def import_session(self, account_id: int, session_str: str) -> dict[str, Any]:
@@ -918,35 +1070,9 @@ class AccountManager:
         sess = self._load_session(acc)
         root = Path(out_dir)
         root.mkdir(parents=True, exist_ok=True)
-        safe = "".join(c for c in (acc.label or f"acc{acc.id}")
-                       if c.isalnum() or c in "-_.") or f"acc{acc.id}"
+        from .export_encoding import pack_metadata
+        safe, meta, twofa_plain = pack_metadata(self.s, acc)
         session_path = self.string_to_session_file(sess, str(root / f"{safe}.session"))
-        meta = {
-            "app_id": self.s.api_id,
-            "app_hash": self.s.api_hash,
-            "sdk": acc.app_version or "",
-            "device": acc.device_model or "",
-            "app_version": acc.app_version or "",
-            "system_version": "",
-            "lang_code": acc.lang_code or "zh",
-            "system_lang_pack": acc.lang_code or "zh",
-            "user_id": acc.user_id,
-            "phone": acc.phone or "",
-            "username": acc.username or "",
-            "session_file": safe,
-            "label": acc.label,
-            "id": acc.id,
-            "has_2fa": acc.has_2fa,
-        }
-        twofa_plain = ""
-        if getattr(acc, "twofa_enc", None):
-            try:
-                from .crypto import decrypt
-                twofa_plain = decrypt(self.s.master_key, acc.twofa_enc)
-            except Exception:
-                twofa_plain = ""
-        meta["twofa"] = twofa_plain
-        meta["password"] = twofa_plain
         json_path = root / f"{safe}.json"
         json_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                              encoding="utf-8")
@@ -982,8 +1108,9 @@ class AccountManager:
                 f"（当前：{type(exc).__name__}: {exc}）"
             ) from exc
 
-        # 用临时 StringSession 客户端，再转 TDesktop
-        import tempfile
+        # Construct with an in-memory session from the outset: replacing a
+        # SQLiteSession leaks its file handle on Windows.
+        from telethon.sessions import StringSession
 
         api = API.TelegramDesktop.Generate()
         if self.s.api_id:
@@ -994,28 +1121,50 @@ class AccountManager:
         if self.s.api_hash:
             api.api_hash = self.s.api_hash
 
-        with tempfile.TemporaryDirectory(prefix="tam_tdata_") as tmp:
-            client = TelegramClient(
-                str(Path(tmp) / "sess"),
-                api=api,
-                proxy=None,
-                receive_updates=False,
-            )
-            # 注入已有 StringSession
-            from telethon.sessions import StringSession as _SS
-            client.session = _SS(sess)
-            try:
-                await client.connect()
-                if not await client.is_user_authorized():
-                    raise RuntimeError("会话未授权，无法导出 tdata")
-                tdesk = await client.ToTDesktop(flag=UseCurrentSession)
-                tdata_dir = root / "tdata"
-                tdesk.SaveTData(str(tdata_dir))
-            finally:
+        source_session = StringSession(sess)
+        client = TelegramClient(
+            source_session, api=api,
+            proxy=parse_proxy(acc.proxy or self.s.default_proxy),
+            receive_updates=False, connection_retries=1, retry_delay=1,
+            auto_reconnect=False, timeout=15,
+        )
+        try:
+            last_connect_error: BaseException | None = None
+            for attempt in range(3):
                 try:
-                    await client.disconnect()
-                except Exception:  # noqa: BLE001
-                    pass
+                    await asyncio.wait_for(client.connect(), timeout=25)
+                    last_connect_error = None
+                    break
+                except (asyncio.IncompleteReadError, ConnectionError, OSError, TimeoutError) as exc:
+                    last_connect_error = exc
+                    try:
+                        await asyncio.wait_for(client.disconnect(), timeout=5)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if attempt < 2:
+                        await asyncio.sleep(0.6 * (attempt + 1))
+            if last_connect_error is not None:
+                raise RuntimeError(
+                    f"连接 Telegram 连续失败 3 次（{type(last_connect_error).__name__}），"
+                    "请检查网络后重试"
+                ) from last_connect_error
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=15):
+                raise RuntimeError("会话未授权，请先检查账号登录状态")
+            tdesk = await asyncio.wait_for(client.ToTDesktop(flag=UseCurrentSession, api=api), timeout=30)
+            tdata_dir = root / "tdata"
+            if not tdesk.SaveTData(str(tdata_dir)):
+                raise RuntimeError("tdata 保存失败")
+            from .tdata_native import read_tdata
+            report = read_tdata(tdata_dir)
+            if (not report.ok or len(report.accounts) != 1
+                    or report.accounts[0].main_dc != source_session.dc_id
+                    or report.accounts[0].auth_keys.get(source_session.dc_id) != source_session.auth_key.key):
+                raise RuntimeError("tdata 回读校验失败，未交付导出文件")
+        finally:
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=10)
+            except Exception:  # noqa: BLE001
+                pass
 
         if not (root / "tdata").exists():
             raise RuntimeError("tdata 未生成")
@@ -1046,6 +1195,16 @@ class AccountManager:
         systems = ["Windows 10", "Windows 11", "Windows 11 x64"]
         apps = ["5.3.1 x64", "5.4.0 x64", "5.2.3 x64"]
         return random.choice(models), random.choice(apps), random.choice(systems)
+
+    def _login_device_fp(self, acc: Account) -> tuple[str, str, str]:
+        """Return a stable fingerprint for an account.
+
+        Existing account values are always reused.  A new value is generated only
+        when the account has no saved fingerprint, then persisted by the caller.
+        """
+        if acc.device_model and acc.app_version and acc.system_version:
+            return acc.device_model, acc.app_version, acc.system_version
+        return self._random_desktop_fp()
 
     async def regenerate_session(
         self,
@@ -1084,7 +1243,9 @@ class AccountManager:
             except Exception:  # noqa: BLE001
                 password = password
 
-        device_model, app_version, system_version = self._random_desktop_fp()
+        # Reuse the account fingerprint on every regeneration.  Rotating it on
+        # each login makes the same account look like a new client repeatedly.
+        device_model, app_version, system_version = self._login_device_fp(acc)
         api_id = self.s.api_id or DESKTOP_API_ID
         api_hash = self.s.api_hash or DESKTOP_API_HASH
         proxy = parse_proxy(acc.proxy or self.s.default_proxy)
@@ -1550,6 +1711,52 @@ class AccountManager:
         self.db.log(account_id, "logout", True, note)
         return {"ok": True, "remote_logged_out": remote, "note": note}
 
+    async def logout_and_auto_login(
+        self,
+        account_id: int,
+        password: str | None = None,
+        timeout: float = 120.0,
+        query_delay: float = 60.0,
+        poll_interval: float = 60.0,
+        adaptive_timing: bool = True,
+    ) -> dict[str, Any]:
+        """清理本地失效会话后，立即通过取码链接重新登录。"""
+        acc = self.db.get(account_id)
+        if acc is None:
+            raise RuntimeError("账号不存在")
+        if not acc.phone:
+            raise RuntimeError("该账号未配置手机号，未执行退出")
+        if not acc.code_url:
+            raise RuntimeError("该账号未配置取码链接，未执行退出")
+
+        effective_password = password
+        if not (effective_password or "").strip() and getattr(acc, "twofa_enc", None):
+            try:
+                from .crypto import decrypt
+                effective_password = decrypt(self.s.master_key, acc.twofa_enc)
+            except Exception:  # noqa: BLE001
+                effective_password = None
+
+        logout_result = await self.logout(account_id)
+        try:
+            login_result = await self.auto_login(
+                account_id, password=effective_password, timeout=timeout,
+                query_delay=query_delay, poll_interval=poll_interval, **({"adaptive_timing": adaptive_timing} if adaptive_timing is False else {}))
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "account_id": account_id,
+                "logout": logout_result,
+                "login": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {
+            "ok": bool(login_result.get("ok", True)),
+            "account_id": account_id,
+            "logout": logout_result,
+            "login": login_result,
+        }
+
 
     async def delete_telegram_account(
         self,
@@ -1642,23 +1849,67 @@ class AccountManager:
         return _SessionCtx(self, account_id)
 
     # ---------- 业务动作 ----------
+    async def read_official_code(self, account_id: int) -> dict[str, Any]:
+        """Read recent service codes through the saved session; never send a code."""
+        import re
+        from datetime import datetime, timezone
+
+        async with self.session(account_id) as client:
+            messages = await asyncio.wait_for(client.get_messages(777000, limit=10), timeout=15)
+        now = datetime.now(timezone.utc)
+        # Language-neutral extraction: service messages typically contain one
+        # isolated 4-8 digit token. Reject surrounding long numeric fields.
+        pattern = r'(?<![\d])([0-9]{4,8})(?![\d])'
+        for msg in sorted(messages or [], key=lambda m: getattr(m, 'id', 0), reverse=True):
+            date = getattr(msg, 'date', None)
+            if not date or getattr(msg, 'out', False):
+                continue
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            age = (now - date).total_seconds()
+            # Telegram may deliver the service message late; retain a one-hour
+            # window while still avoiding stale historical codes.
+            if age < -60 or age > 3600:
+                continue
+            text = getattr(msg, 'message', '') or ''
+            candidates = re.findall(pattern, text)
+            # Ignore dates/times and phone-like runs; prefer tokens near a
+            # verification/login keyword, otherwise use the sole candidate.
+            candidates = [c for c in candidates if not re.search(r'(?:20\d{2}|\d{1,2}:\d{2})', text[max(0, text.find(c)-4):text.find(c)+len(c)+4])]
+            match = None
+            keyword = re.search(r'(?i)(code|codigo|kode|验证码|驗證碼|код|telegram|login|вход)', text)
+            if keyword:
+                match = re.search(pattern, text)
+            if len(candidates) == 1 and re.search(r'(?i)(code|codigo|kode|验证码|驗證碼|код|telegram|login|вход)', text):
+                match = type('M', (), {'group': lambda self, n: candidates[0]})()
+            if match:
+                return {'account_id': account_id, 'code': match.group(1),
+                        'date': date.isoformat(), 'source': 'telegram', 'message_id': msg.id}
+        return {'account_id': account_id, 'code': None, 'date': None, 'source': 'telegram'}
+
     async def health_check(self, account_id: int) -> dict[str, Any]:
         """检查授权状态、限制状态与基本信息。"""
         from telethon import functions
         from telethon.errors import (
             AuthKeyUnregisteredError, UserDeactivatedBanError, FloodWaitError,
+            SessionRevokedError, SessionExpiredError, AuthKeyDuplicatedError,
         )
 
         acc = self.db.get(account_id)
         if acc is None:
             raise RuntimeError("账号不存在")
         if not acc.session_enc:
-            self.db.update(account_id, status="unauthorized", last_check_at=time.time())
-            return {"account_id": account_id, "status": "unauthorized"}
+            note = "未授权：缺少会话"
+            self.db.update(account_id, status="unauthorized",
+                           last_check_at=time.time(), last_check_result="fail",
+                           last_check_error=note)
+            return {"account_id": account_id, "status": "unauthorized",
+                    "last_check_result": "fail", "last_check_error": note}
         try:
             async with self.session(account_id) as client:
-                me = await client.get_me()
-                full = await client(functions.users.GetFullUserRequest("me"))
+                # 独立只读请求并行，减少串行往返延迟。
+                me, full = await asyncio.gather(
+                    client.get_me(), client(functions.users.GetFullUserRequest("me")))
                 restricted = bool(getattr(me, "restricted", False))
                 premium = bool(getattr(me, "premium", False))
                 has_2fa = None
@@ -1669,10 +1920,13 @@ class AccountManager:
                 except Exception:
                     pass
                 status = "restricted" if restricted else "active"
+                result = "warn" if restricted else "ok"
+                error = "账号受限" if restricted else None
                 self.db.update(
                     account_id, user_id=me.id, username=me.username,
                     status=status, status_note=None, premium=int(premium),
                     has_2fa=has_2fa, last_check_at=time.time(),
+                    last_check_result=result, last_check_error=error,
                 )
                 self.db.log(account_id, "health_check", True, status)
                 return {
@@ -1682,27 +1936,40 @@ class AccountManager:
                     "username": me.username,
                     "premium": premium,
                     "has_2fa": has_2fa,
+                    "last_check_result": result,
+                    "last_check_error": error,
                     "about": getattr(full.full_user, "about", None),
                 }
-        except (AuthKeyUnregisteredError,) as exc:
+        except (AuthKeyUnregisteredError, SessionRevokedError, SessionExpiredError,
+                AuthKeyDuplicatedError, SessionUnauthorizedError) as exc:
             self._mark(account_id, "unauthorized", exc)
-            return {"account_id": account_id, "status": "unauthorized"}
+            return {"account_id": account_id, "status": "unauthorized",
+                    "last_check_result": "fail",
+                    "last_check_error": repr(exc)[:500]}
         except UserDeactivatedBanError as exc:
             self._mark(account_id, "banned", exc)
-            return {"account_id": account_id, "status": "banned"}
+            return {"account_id": account_id, "status": "banned",
+                    "last_check_result": "fail",
+                    "last_check_error": repr(exc)[:500]}
         except FloodWaitError as exc:
-            self._mark(account_id, "error", exc, note=f"FloodWait {exc.seconds}s")
-            return {"account_id": account_id, "status": "flood_wait", "seconds": exc.seconds}
+            note = f"FloodWait {exc.seconds}s"
+            self._mark(account_id, "error", exc, note=note)
+            return {"account_id": account_id, "status": "flood_wait", "seconds": exc.seconds,
+                    "last_check_result": "fail", "last_check_error": note}
         except Exception as exc:  # 网络/代理类错误
             self._mark(account_id, "error", exc)
-            return {"account_id": account_id, "status": "error", "error": repr(exc)}
+            return {"account_id": account_id, "status": "error", "error": repr(exc),
+                    "last_check_result": "fail",
+                    "last_check_error": repr(exc)[:500]}
 
     def _mark(self, account_id: int, status: str, exc: Exception, note: str | None = None) -> None:
+        reason = (note or repr(exc))[:500]
         self.db.update(
-            account_id, status=status, status_note=note or repr(exc)[:500],
-            last_check_at=time.time(),
+            account_id, status=status, status_note=reason,
+            last_check_at=time.time(), last_check_result="fail",
+            last_check_error=reason,
         )
-        self.db.log(account_id, "health_check", False, note or repr(exc))
+        self.db.log(account_id, "health_check", False, reason)
 
     async def get_dialogs(self, account_id: int, limit: int = 30) -> list[dict[str, Any]]:
         self._require_session(account_id)
@@ -2168,15 +2435,72 @@ class AccountManager:
                 if stagger:
                     await human_delay(self.s.action_min_delay, self.s.action_max_delay)
                 try:
-                    results[idx] = {"account_id": aid, "ok": True,
-                                    "result": await task(aid)}
+                    async with self._batch_gate:
+                        value = await task(aid)
+                        health_failure = isinstance(value, dict) and value.get("status") in {
+                            "unauthorized", "error", "banned", "deleted", "flood_wait",
+                        }
+                        if isinstance(value, dict) and value.get("ok") is False:
+                            item = {"account_id": aid, **value}
+                            inferred = item.get("code")
+                            results[idx] = enrich_failure(item, code=inferred)
+                        elif isinstance(value, dict) and (value.get("alive") is False or health_failure):
+                            # 健康检查/验活原本是成功返回的业务结果；只新增 code，
+                            # 不改旧的外层 ok/result 字段语义。
+                            inferred = value.get("code") or (
+                                "session_invalid" if value.get("alive") is False else {
+                                    "unauthorized": "session_invalid", "error": "network_timeout",
+                                    "banned": "account_banned", "deleted": "account_deleted",
+                                    "flood_wait": "flood_wait",
+                                }.get(value.get("status"), "internal_error")
+                            )
+                            results[idx] = {"account_id": aid, "ok": True,
+                                            "result": value, "code": inferred}
+                            results[idx] = enrich_failure(item, code=inferred)
+                        else:
+                            results[idx] = {"account_id": aid, "ok": True,
+                                            "result": value}
                 except Exception as exc:
-                    results[idx] = {"account_id": aid, "ok": False,
-                                    "error": repr(exc)}
+                    results[idx] = enrich_failure(
+                        {"account_id": aid, "ok": False, "error": repr(exc)}, exc)
 
         await asyncio.gather(
             *(worker(i, a) for i, a in enumerate(account_ids)))
         return results
+
+
+class _LoginClientLease:
+    """Task-local ownership, inherited by wait_for children, never a global cache."""
+    def __init__(self, mgr, account_id):
+        self.mgr, self.account_id = mgr, account_id
+        self.client = None
+        self.saved_session = None
+        self.lock = mgr._lock(account_id)
+
+    async def __aenter__(self):
+        if self.mgr._current_login_lease(self.account_id):
+            raise RuntimeError('重复的连接租约')
+        await self.lock.acquire()
+        self.token = _login_client_lease.set(self)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        try:
+            if self.client is not None:
+                try:
+                    await asyncio.wait_for(self.client.disconnect(), timeout=10)
+                except Exception:
+                    # Remote work is already committed; cleanup failure must
+                    # not turn a successful account into a failed target.
+                    try:
+                        self.mgr.db.log(self.account_id, 'disconnect_cleanup', False,
+                                        '连接清理异常（已忽略，不影响已完成结果）')
+                    except Exception:
+                        pass
+        finally:
+            self.client = None
+            _login_client_lease.reset(self.token)
+            self.lock.release()
 
 
 class _SessionCtx:
@@ -2188,8 +2512,17 @@ class _SessionCtx:
         self.client: Any = None
         self._acc: Account | None = None
         self._lock_held = False
+        self._lease = None
 
     async def __aenter__(self) -> Any:
+        lease = self.mgr._current_login_lease(self.account_id)
+        if lease is not None:
+            if lease.client is None or not lease.client.is_connected():
+                raise RuntimeError('一条龙已验证连接中断，请重新检查会话')
+            self.client = lease.client
+            self._acc = self.mgr.db.get(self.account_id)
+            self._lease = lease
+            return self.client
         await self.mgr._lock(self.account_id).acquire()
         self._lock_held = True
         try:
@@ -2210,22 +2543,23 @@ class _SessionCtx:
                 ) from exc
             # 未授权立刻失败，避免 dialogs/spam 等在无效 session 上空转超时
             try:
-                ok = await asyncio.wait_for(
-                    self.client.is_user_authorized(), timeout=10.0)
+                from telethon.tl.functions.updates import GetStateRequest
+                from telethon.errors import RPCError
+                await asyncio.wait_for(self.client(GetStateRequest()), timeout=10.0)
+            except RPCError as exc:
+                self.mgr.db.log(self.account_id, "session_authorization", False,
+                                type(exc).__name__)
+                if type(exc).__name__ in {"AuthKeyUnregisteredError", "UserDeactivatedBanError", "SessionRevokedError"}:
+                    try:
+                        self.mgr.db.update(self.account_id, status="unauthorized",
+                                           status_note="会话已失效", last_check_at=time.time())
+                    except Exception:
+                        pass
+                raise
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(
                     f"检查授权状态失败：{type(exc).__name__}: {exc}"
                 ) from exc
-            if not ok:
-                try:
-                    self.mgr.db.update(
-                        self.account_id, status="unauthorized",
-                        status_note="session unauthorized",
-                        last_check_at=time.time(),
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-                raise RuntimeError("会话未授权或已失效，请重新登录/导入")
             return self.client
         except Exception:
             await self._safe_disconnect(save=False)
@@ -2253,6 +2587,14 @@ class _SessionCtx:
             self.client = None
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._lease is not None:
+            if exc_type is None:
+                current = self.client.session.save()
+                if current and current != self._lease.saved_session:
+                    self.mgr._save_session(self._acc, current)
+                    self._lease.saved_session = current
+            self.client = None
+            return
         try:
             # 仅在仍授权时回写 session；未授权/异常路径不把坏状态盖掉
             await self._safe_disconnect(save=exc_type is None)

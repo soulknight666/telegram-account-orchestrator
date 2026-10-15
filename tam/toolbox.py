@@ -15,7 +15,9 @@ session 回写都是它自动做的，不用再抄一遍，也不会出现两处
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Awaitable, Callable
+from .errors import enrich_failure
 
 __all__ = ["OP_SPECS", "OPS", "get_spec", "validate_params", "run_op",
            "run_op_batch", "ToolboxError"]
@@ -23,6 +25,12 @@ __all__ = ["OP_SPECS", "OPS", "get_spec", "validate_params", "run_op",
 
 class ToolboxError(Exception):
     """工具箱参数或执行错误。"""
+
+    def __init__(self, detail: str, *, code: str = "internal_error",
+                 params: dict[str, Any] | None = None):
+        self.code = code
+        self.params = params
+        super().__init__(detail)
 
 
 # --------------------------------------------------------------------------
@@ -39,7 +47,7 @@ async def op_alive(client: Any, p: dict) -> dict:
 
     timeout = float(p.get("timeout") or 10)
     if not await client.is_user_authorized():
-        return {"alive": False, "reason": "未授权（session 已失效）"}
+        return {"alive": False, "reason": "未授权（session 已失效）", "code": "session_invalid"}
     try:
         await asyncio.wait_for(client(GetAppConfigRequest(hash=0)),
                                timeout=timeout)
@@ -49,6 +57,19 @@ async def op_alive(client: Any, p: dict) -> dict:
     return {"alive": True, "user_id": getattr(me, "id", None),
             "username": getattr(me, "username", None),
             "phone": getattr(me, "phone", None)}
+
+
+async def op_quick_alive(client: Any, p: dict) -> dict:
+    """最快速验活：仅验证授权并发起一个轻量 API 请求，不读取资料。"""
+    from telethon.tl.functions.help import GetAppConfigRequest
+    timeout = float(p.get("timeout") or 5)
+    if not await client.is_user_authorized():
+        return {"alive": False, "reason": "未授权（session 已失效）"}
+    try:
+        await asyncio.wait_for(client(GetAppConfigRequest(hash=0)), timeout=timeout)
+    except asyncio.TimeoutError:
+        return {"alive": False, "reason": f"{timeout:g}s 内无响应"}
+    return {"alive": True}
 
 
 async def op_twofa(client: Any, p: dict) -> dict:
@@ -66,7 +87,7 @@ async def op_twofa(client: Any, p: dict) -> dict:
     new = (p.get("new") or "").strip()
     hint = (p.get("hint") or "").strip()
     if not new and not old:
-        raise ToolboxError("新密码和当前密码不能都为空")
+        raise ToolboxError("新密码和当前密码不能都为空", code="op_param_missing", params={"name": "new"})
 
     pwd = await client(GetPasswordRequest())
     had = bool(getattr(pwd, "has_password", False))
@@ -74,16 +95,24 @@ async def op_twofa(client: Any, p: dict) -> dict:
     kwargs: dict[str, Any] = {}
     if had:
         if not old:
-            raise ToolboxError("这个号已经设过二验，必须填当前密码")
+            raise ToolboxError("旧2FA缺失：该账号已开启二验，请补充当前密码",
+                               code="twofa_required", params={"name": "old"})
         kwargs["current_password"] = old
-    elif old:
+    elif old and not p.get("_old_from_saved"):
         # 号上没有二验却填了当前密码，直接拦下来，不然会被当成「关闭二验」
-        raise ToolboxError("这个号还没有二验，当前密码要留空")
+        raise ToolboxError("这个号还没有二验，当前密码要留空", code="validation_error")
     kwargs["new_password"] = new or None
     if new and hint:
         kwargs["hint"] = hint
 
-    await client.edit_2fa(**kwargs)
+    try:
+        await client.edit_2fa(**kwargs)
+    except Exception as exc:
+        if type(exc).__name__ == "PasswordHashInvalidError":
+            source = "已保存" if p.get("_old_from_saved") else "手动输入"
+            raise ToolboxError(f"旧2FA不匹配：{source}的当前密码无效",
+                               code="twofa_wrong") from None
+        raise
 
     # 不信返回值，回头查真实状态
     after = await client(GetPasswordRequest())
@@ -1204,6 +1233,10 @@ async def op_interact_bot(client: Any, p: dict) -> dict:
 
 
 OP_SPECS: list[dict[str, Any]] = [
+    {"op": "quick_alive", "label": "⚡ 快速验活", "danger": False,
+     "desc": "仅验证会话授权，最快返回结果，不读取资料或二验状态",
+     "params": [{"name": "timeout", "type": "float", "label": "超时（秒）",
+                 "default": 5}]},
     {"op": "alive", "label": "筛活", "danger": False,
      "desc": "探测号是否还能用，不产生任何可见行为",
      "params": [{"name": "timeout", "type": "float", "label": "超时（秒）",
@@ -1227,9 +1260,9 @@ OP_SPECS: list[dict[str, Any]] = [
      "params": [{"name": "phones", "type": "textarea",
                  "label": "手机号（每行一个，最多 500）", "required": True}]},
     {"op": "twofa", "label": "改二步验证", "danger": True,
-     "desc": "设置或移除二验密码。新密码留空 = 移除",
+     "desc": "优先使用各账号已保存的二验；当前密码仅用于未保存的账号。新密码留空 = 移除",
      "params": [{"name": "old", "type": "password",
-                 "label": "当前密码（没设过就留空）"},
+                 "label": "未保存账号的当前密码（未开启二验则留空）"},
                 {"name": "new", "type": "password",
                  "label": "新密码（留空 = 移除二验）"},
                 {"name": "hint", "type": "str", "label": "提示语"}]},
@@ -1375,6 +1408,7 @@ OP_SPECS: list[dict[str, Any]] = [
 ]
 
 OPS: dict[str, Callable[[Any, dict], Awaitable[dict]]] = {
+    "quick_alive": op_quick_alive,
     "alive": op_alive,
     "spam_check": op_spam_check,
     "okpay_balance": op_okpay_balance,
@@ -1424,7 +1458,7 @@ assert set(_SPEC_BY_OP) == set(OPS), (
 def get_spec(op: str) -> dict[str, Any]:
     spec = _SPEC_BY_OP.get(op)
     if spec is None:
-        raise ToolboxError(f"不认识的操作：{op}")
+        raise ToolboxError(f"不认识的操作：{op}", code="op_unknown", params={"name": op})
     return spec
 
 
@@ -1435,12 +1469,12 @@ def validate_params(op: str, params: dict | None) -> dict:
     known = {p["name"]: p for p in spec["params"]}
     for k in params:
         if k not in known:
-            raise ToolboxError(f"{op} 不接受参数 {k}")
+            raise ToolboxError(f"{op} 不接受参数 {k}", code="op_param_missing", params={"name": k})
     out: dict[str, Any] = {}
     for name, meta in known.items():
         if name not in params or params[name] is None or params[name] == "":
             if meta.get("required"):
-                raise ToolboxError(f"{meta.get('label') or name} 必填")
+                raise ToolboxError(f"{meta.get('label') or name} 必填", code="op_param_missing", params={"name": name})
             if "default" in meta:
                 out[name] = meta["default"]
             continue
@@ -1458,23 +1492,100 @@ def validate_params(op: str, params: dict | None) -> dict:
                 out[name] = v
         except (TypeError, ValueError):
             raise ToolboxError(
-                f"{meta.get('label') or name} 填的不是{kind}：{v!r}") from None
+                f"{meta.get('label') or name} 填的不是{kind}：{v!r}",
+                code="validation_error", params={"name": name}) from None
     # required 的 bool（比如销号确认）没勾也要拦下来
     for name, meta in known.items():
         if meta.get("required") and not out.get(name):
-            raise ToolboxError(f"{meta.get('label') or name} 必填")
+            raise ToolboxError(f"{meta.get('label') or name} 必填", code="op_param_missing", params={"name": name})
     return out
 
 
+async def _run_saved_twofa(manager, account_id, client, clean):
+    """Resolve and replace credentials while the account session lock is held."""
+    from .crypto import decrypt, encrypt
+
+    acc = manager.db.get(account_id)
+    if acc is None:
+        raise ToolboxError("账号不存在", code="not_found", params={"account_id": account_id})
+    clean = dict(clean)
+    if getattr(acc, "twofa_enc", None):
+        try:
+            clean["old"] = decrypt(manager.s.master_key, acc.twofa_enc)
+            clean["_old_from_saved"] = True
+        except Exception:
+            raise ToolboxError("已保存2FA解密失败：请检查主密钥或重新保存当前密码") from None
+    # Encrypt before making the remote change, so encryption errors leave TG untouched.
+    new = (clean.get("new") or "").strip()
+    encrypted = encrypt(manager.s.master_key, new) if new else None
+    result = await OPS["twofa"](client, clean)
+    if isinstance(result, dict) and "has_password" in result:
+        try:
+            manager.db.update(account_id, has_2fa=int(bool(result["has_password"])),
+                              twofa_enc=encrypted if result["has_password"] else None)
+        except Exception:
+            raise ToolboxError("远端2FA已修改，本地保存失败：请用新密码更新本地记录，勿重复修改") from None
+    return result
+
+
 async def run_op(manager: Any, account_id: int, op: str,
+                 params: dict | None = None) -> dict[str, Any]:
+    if op != 'twofa':
+        return await _run_op_impl(manager, account_id, op, params)
+    database = getattr(manager, 'db', None)
+    begin = getattr(database, 'begin_twofa_result', None)
+    attempt = begin(account_id) if begin else None
+    def finish(status, detail):
+        if attempt:
+            database.finish_twofa_result(account_id, attempt, status, detail)
+    try:
+        result = await _run_op_impl(manager, account_id, op, params)
+        expected = bool(str((params or {}).get('new') or '').strip())
+        if not isinstance(result, dict) or result.get('has_password') is not expected:
+            finish('uncertain', '改密结果未确认，暂不导出')
+        else:
+            finish('success', '2FA修改并保存成功')
+        return result
+    except BaseException as exc:
+        name = type(exc).__name__
+        if name == 'PasswordHashInvalidError':
+            status, detail = 'failed', '当前2FA密码错误，修改失败'
+        elif name in ('AuthKeyUnregisteredError','SessionRevokedError','SessionUnauthorizedError'):
+            status, detail = 'failed', '会话已失效，修改失败'
+        elif name == 'FloodWaitError':
+            status, detail = 'failed', 'Telegram限流，修改失败，请稍后核对'
+        else:
+            status, detail = 'uncertain', '改密未确认或保存失败，请核对后再导出'
+        finish(status, detail)
+        raise
+
+
+async def _run_op_impl(manager: Any, account_id: int, op: str,
                  params: dict | None = None) -> dict[str, Any]:
     """对单个号执行一项操作。连接/加锁/限速/回写全交给 manager.session。"""
     clean = validate_params(op, params)
     fn = OPS[op]
     async with manager.session(account_id) as client:
+        # session() already performs a fresh GetStateRequest authorization check.
+        if op == "twofa":
+            return await _run_saved_twofa(manager, account_id, client, clean)
         if not await client.is_user_authorized():
-            raise ToolboxError("这个号没有登录态（session 已失效）")
+            raise ToolboxError("这个号没有登录态（session 已失效）",
+                               code="session_invalid", params={"account_id": account_id})
         result = await fn(client, clean)
+    # 验活类操作也要同步账号列表状态，避免结果区显示有效但账号行仍停留旧状态。
+    if op in ("alive", "quick_alive") and isinstance(result, dict):
+        try:
+            if result.get("alive"):
+                manager.db.update(account_id, status="active", status_note=None,
+                                  last_check_at=time.time())
+            else:
+                reason = str(result.get("reason") or "验活失败")
+                status = "unauthorized" if "未授权" in reason or "失效" in reason else "error"
+                manager.db.update(account_id, status=status, status_note=reason,
+                                  last_check_at=time.time())
+        except Exception:
+            pass
     # 退出登录 / 注销账号后清掉本地 session，避免列表仍显示「已授权」
     if op in ("logout", "delete_tg_account"):
         try:
@@ -1514,24 +1625,32 @@ async def run_op(manager: Any, account_id: int, op: str,
                 manager.db.update(account_id, **updates)
         except Exception:
             pass
-    # 改二验成功后回写有无二验；新密码加密保存供列表显示与导出 2fa.txt
-    if op == "twofa" and isinstance(result, dict) and "has_password" in result:
-        try:
-            updates = {"has_2fa": int(bool(result["has_password"]))}
-            new_pwd = (clean.get("new") or "").strip()
-            if result.get("has_password") and new_pwd:
-                from .crypto import encrypt
-                updates["twofa_enc"] = encrypt(manager.s.master_key, new_pwd)
-            elif not result.get("has_password"):
-                updates["twofa_enc"] = None
-            manager.db.update(account_id, **updates)
-        except Exception:
-            try:
-                manager.db.update(account_id,
-                                  has_2fa=int(bool(result["has_password"])))
-            except Exception:
-                pass
     return result
+
+
+def preview_op_batch(manager: Any, account_ids: list[int], op: str,
+                     params: dict | None = None) -> dict[str, Any]:
+    """复用批量工具箱的前置筛选，供执行器和预览接口共同使用。"""
+    validate_params(op, params)
+    if not account_ids:
+        raise ToolboxError("没有选中任何账号", code="validation_error")
+
+    skipped: list[dict[str, Any]] = []
+    runnable: list[int] = []
+    for aid in dict.fromkeys(account_ids):
+        acc = manager.db.get(aid)
+        if op == "twofa" and (
+            acc is None
+            or acc.status in {"unauthorized", "error"}
+            or not acc.session_enc
+            or getattr(acc, "authorized", True) is False
+        ):
+            reason = "账号不存在" if acc is None else "会话已失效"
+            skipped.append({"id": aid, "reason_code": "not_found" if acc is None else "session_invalid",
+                            "reason": reason})
+        else:
+            runnable.append(aid)
+    return {"run": runnable, "skip": skipped}
 
 
 async def run_op_batch(manager: Any, account_ids: list[int], op: str,
@@ -1542,14 +1661,27 @@ async def run_op_batch(manager: Any, account_ids: list[int], op: str,
     先校验一次参数，别等跑到第 50 个号才发现参数是错的。
     """
     clean = validate_params(op, params)
-    if not account_ids:
-        raise ToolboxError("没有选中任何账号")
+    preview = preview_op_batch(manager, account_ids, op, clean)
+    runnable = preview["run"]
+    skipped = []
+    for row in preview["skip"]:
+        reason = row["reason"]
+        if op == "twofa" and row["reason_code"] == "session_invalid":
+            try:
+                manager.db.update(row["id"], status="unauthorized", status_note=reason)
+                manager.db.log(row["id"], "toolbox.twofa", False, reason)
+            except Exception:
+                pass
+        skipped.append({"account_id": row["id"], "ok": False,
+                        "skipped": True, "error": reason,
+                        "code": row["reason_code"]})
 
     async def task(aid: int) -> dict:
         return await run_op(manager, aid, op, clean)
 
-    results = await manager.run_batch(account_ids, task,
-                                      concurrency=concurrency)
+    results = await manager.run_batch(runnable, task,
+                                      concurrency=concurrency, stagger=op != "twofa")
+    results = skipped + results
     ok = sum(1 for r in results if r.get("ok"))
     return {"op": op, "total": len(results), "ok": ok,
             "failed": len(results) - ok, "results": results}

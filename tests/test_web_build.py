@@ -83,17 +83,27 @@ def test_web_sources_have_single_complete_javascript_entrypoint() -> None:
 
 
 def test_generated_web_page_contains_complete_sources() -> None:
+    from tam.web.csp import with_csp_meta
     source = (WEB / "index.src.html").read_text(encoding="utf-8")
     css = (WEB / "styles.css").read_text(encoding="utf-8")
     javascript = (WEB / "app.js").read_text(encoding="utf-8")
     generated = (WEB / "index.html").read_text(encoding="utf-8")
 
     expected = source.replace("  /* CSS_PLACEHOLDER */\n", css)
+    vendor = "\n".join(line.rstrip() for line in (
+        WEB / "vendor" / "gsap-3.13.0.min.js"
+    ).read_text(encoding="utf-8").splitlines()).strip()
+    expected = expected.replace(
+        "/* GSAP_PLACEHOLDER */\n",
+        "/* GSAP 3.13.0 (vendored; see vendor/GSAP-NOTICE.txt) */\n" + vendor + "\n",
+    )
     expected = expected.replace("/* JS_PLACEHOLDER */\n", javascript)
+    expected = with_csp_meta(expected)
 
     assert generated == expected
     assert "CSS_PLACEHOLDER" not in generated
     assert "JS_PLACEHOLDER" not in generated
+    assert "GSAP_PLACEHOLDER" not in generated
 
 
 def test_web_javascript_is_valid() -> None:
@@ -135,7 +145,7 @@ def test_batch_login_collects_twofa_and_supports_logout_relogin() -> None:
     source = (WEB / "index.src.html").read_text(encoding="utf-8")
     javascript = (WEB / "app.js").read_text(encoding="utf-8")
 
-    assert 'onclick="bulk(\'relogin\')"' in source
+    assert re.search(r'onclick="[^"\n]*\bbulk\(\'relogin\'\)"', source)
     assert "统一两步验证密码" in javascript
     assert "password: true" in javascript
     assert "relogin:true" in javascript
@@ -179,7 +189,7 @@ def test_hot_reload_waits_for_a_new_process_instance() -> None:
 def test_layout_shell_contract_is_present() -> None:
     source = (WEB / "index.src.html").read_text(encoding="utf-8")
     assert 'id="appShell"' in source
-    assert 'id="sideNav"' in source
+    assert re.search(r'<nav\b[^>]*id="mainNav"[^>]*aria-label="主导航"', source)
     assert 'id="workspace"' in source
     assert 'id="accountDetailDrawer"' in source
     assert 'data-nav="accounts"' in source

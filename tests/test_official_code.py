@@ -47,8 +47,10 @@ class OfficialCodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.exited)
 
     async def test_ignores_old_messages_and_unrelated_numbers(self):
+        # Stay just beyond the one-hour freshness boundary; exact-boundary
+        # timestamps can round differently across Windows/Python versions.
         mgr, _ = self.manager([self.message('Device version: 12345'),
-                               self.message('Login code: 54321', seconds=3600)])
+                               self.message('Login code: 54321', seconds=3605)])
         self.assertIsNone((await mgr.read_official_code(42))['code'])
 
     async def test_chinese_code(self):

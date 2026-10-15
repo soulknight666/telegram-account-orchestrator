@@ -37,7 +37,9 @@ def test_account_check_fields_are_migrated_and_public(tmp_path):
 def test_incremental_account_changes_include_updates_and_deletes(tmp_path):
     db = _db(tmp_path)
     acc = db.add_account(Account(label="delta", session_enc="encrypted"))
-    since = time.time()
+    # Keep a small clock margin for Windows runners where wall-clock readings
+    # can have lower resolution or move backwards between SQLite writes.
+    since = time.time() - 1.0
     db.update(acc.id, status_note="changed")
     db.delete(acc.id)
     changes = db.changes_since(since)

@@ -1,5 +1,12 @@
 """Contract checks for additive response models and OpenAPI exposure."""
 
+import os
+
+# Importing tam.api builds the application at module import time and therefore
+# loads Settings immediately.  Keep this contract test hermetic: CI runners
+# do not have the developer's local .env, and this value is synthetic only.
+os.environ.setdefault("TAM_MASTER_KEY", "test-response-models-" + "0" * 48)
+
 from tam.api import app
 from tam.api import (
     AccountOut,

@@ -21,6 +21,10 @@ v0.3.2 highlights:
 - 大批量账号管理优化：增量刷新、并发参数导航、结构化错误码和更清晰的任务状态反馈。
 - 发布包提供 Windows 安装版、Portable 版和 Linux x64 包，并附带校验文件。
 
+### 最新主页面
+
+![TAO 最新主页面预览](docs/assets/tao-main-screen.jpg)
+
 **Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and Telegram Desktop tdata import.**
 
 TAO is a Telegram account manager and orchestration toolkit for encrypted session storage, account health checks, controlled batch operations, device-session management, account-package processing, and automation through REST or MCP.

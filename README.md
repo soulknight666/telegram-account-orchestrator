@@ -10,6 +10,16 @@
 </p>
 
 > Telegram 分享建议使用固定预览入口：`https://soulknight666.github.io/telegram-account-orchestrator/`
+## Latest release · v0.3.2
+
+[Windows 安装版](https://github.com/soulknight666/telegram-account-orchestrator/releases/download/v0.3.2/TAO-Windows-x64-Setup.exe) · [Windows Portable](https://github.com/soulknight666/telegram-account-orchestrator/releases/download/v0.3.2/TAO-Windows-x64-Portable.zip) · [Linux x64](https://github.com/soulknight666/telegram-account-orchestrator/releases/download/v0.3.2/TAO-Linux-x64.tar.gz) · [SHA256SUMS](https://github.com/soulknight666/telegram-account-orchestrator/releases/download/v0.3.2/SHA256SUMS.txt)
+
+v0.3.2 highlights:
+
+- 混合 ZIP 智能导入与 tdata 上传体检，支持 dry-run 预览、重复账号识别和失败项明细。
+- 一条龙批处理：自动登录、二验更新、Session 制作与按需导出；批量预览会先列出跳过原因。
+- 大批量账号管理优化：增量刷新、并发参数导航、结构化错误码和更清晰的任务状态反馈。
+- 发布包提供 Windows 安装版、Portable 版和 Linux x64 包，并附带校验文件。
 
 **Self-hosted Telegram multi-account management with Web UI, CLI, Bot, MCP, Telethon, and Telegram Desktop tdata import.**
 
